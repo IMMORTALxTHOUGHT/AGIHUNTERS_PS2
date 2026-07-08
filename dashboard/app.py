@@ -168,7 +168,9 @@ def build():
 
 def launch():
     import gradio as gr
-    build().launch(server_port=DASHBOARD_PORT, css=CSS, share=False)
+    import os
+    share = os.environ.get("GRADIO_SHARE", "0") == "1"
+    build().launch(server_port=DASHBOARD_PORT, css=CSS, share=share)
 
 
 if __name__ == "__main__":
