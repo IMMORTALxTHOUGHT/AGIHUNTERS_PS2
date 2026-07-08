@@ -18,7 +18,8 @@ def get_connection(db_path: str | Path = SQLITE_PATH) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection | None = None) -> None:
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, then migrate any missing columns
+    (so databases created by older code keep working)."""
     close = conn is None
     conn = conn or get_connection()
     conn.executescript("""
@@ -40,8 +41,17 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         );
     """)
     conn.commit()
+    _migrate(conn)
     if close:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add any columns missing from an older schema."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cases)").fetchall()}
+    if "vit_confidence" not in cols:
+        conn.execute("ALTER TABLE cases ADD COLUMN vit_confidence REAL")
+    conn.commit()
 
 
 def insert_case(conn: sqlite3.Connection, defect_type: str, metadata: dict,
