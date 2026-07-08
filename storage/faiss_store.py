@@ -59,42 +59,57 @@ def build_store_from_datasets(
     dagm_root="datasets/dagm/dagm_kaggleupload/DAGM_KaggleUpload/",
     max_per_class: int = 50,
 ):
-    embeddings = []
-    records = []
+    from collections import defaultdict
+    import random
 
-    def _scan(root, label_fn):
+    all_pairs = []
+
+    def _collect(root, label_fn):
         root = Path(root)
-        paths = []
         for p in root.rglob("*"):
             if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".bmp"):
-                paths.append(p)
-        for p in tqdm(paths[:max_per_class], desc=f"Embedding {root}"):
-            try:
-                img = Image.open(p).convert("RGB")
-                emb = embed_fn(img)
-                embeddings.append(emb)
-                records.append({"path": str(p), "label": label_fn(p)})
-            except Exception:
-                continue
+                try:
+                    all_pairs.append((p, label_fn(p)))
+                except Exception:
+                    continue
 
     if mvtec_root:
         def mvtec_label(p):
             parts = Path(p).parts
-            cat = parts[-4]
-            defect = parts[-2]
-            return f"{cat}_{defect}"
-        _scan(Path(mvtec_root), mvtec_label)
+            return f"{parts[-4]}_{parts[-2]}"
+        _collect(Path(mvtec_root), mvtec_label)
 
     if neu_root:
         def neu_label(p):
             return Path(p).parts[-2]
-        _scan(Path(neu_root) / "train" / "images", neu_label)
-        _scan(Path(neu_root) / "validation" / "images", neu_label)
+        _collect(Path(neu_root) / "train" / "images", neu_label)
+        _collect(Path(neu_root) / "validation" / "images", neu_label)
 
     if dagm_root:
         def dagm_label(p):
             return Path(p).parts[-3]
-        _scan(Path(dagm_root), dagm_label)
+        _collect(Path(dagm_root), dagm_label)
+
+    by_label = defaultdict(list)
+    for p, lbl in all_pairs:
+        by_label[lbl].append(p)
+
+    rng = random.Random(42)
+    selected = []
+    for lbl, paths in by_label.items():
+        for p in rng.sample(paths, min(len(paths), max_per_class)):
+            selected.append((p, lbl))
+
+    embeddings = []
+    records = []
+    for p, lbl in tqdm(selected, desc="Embedding selected"):
+        try:
+            img = Image.open(p).convert("RGB")
+            emb = embed_fn(img)
+            embeddings.append(emb)
+            records.append({"path": str(p), "label": lbl})
+        except Exception:
+            continue
 
     store = FaissStore(dim=embeddings[0].shape[0] if embeddings else 256)
     store.build(np.array(embeddings), records)
