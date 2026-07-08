@@ -131,7 +131,7 @@ def teach(image_path, label):
 def build():
     import gradio as gr
 
-    with gr.Blocks(title="ForgeMind", css=CSS) as demo:
+    with gr.Blocks(title="ForgeMind") as demo:
         gr.HTML(_HERO)
 
         gr.HTML('<div class="fm-sec">01 &mdash; Inspect a part</div>')
@@ -168,7 +168,7 @@ def build():
 
 def launch():
     import gradio as gr
-    build().launch(server_port=DASHBOARD_PORT, share=False)
+    build().launch(server_port=DASHBOARD_PORT, css=CSS, share=False)
 
 
 if __name__ == "__main__":
