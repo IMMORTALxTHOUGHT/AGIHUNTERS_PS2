@@ -17,6 +17,8 @@ from config import DASHBOARD_PORT
 from pipeline.inference import infer_one
 from storage import database
 from storage.memory import Memory
+from agents.debate import run_debate
+from agents.moderator import moderate
 
 _memory = Memory()
 
@@ -132,6 +134,43 @@ def _kg_html(result: dict) -> str:
             f'<div class="fm-empty" style="margin-top:10px">{stats}</div>')
 
 
+def _rca_html(image_path) -> str:
+    if not image_path:
+        return '<div class="fm-empty">Run an inspection first.</div>'
+    result = infer_one(image_path)
+    defect = result.get("defect", "unknown")
+    kg_info = _memory.get_knowledge(defect)
+    votes = run_debate(defect, result.get("metadata", {}),
+                       result.get("similar_cases", []), kg_info)
+    verdict = moderate(votes, defect=defect,
+                       metadata=result.get("metadata", {}), kg_info=kg_info)
+
+    vote_rows = "".join(
+        f'<tr><td>{_esc(v["role"])}</td>'
+        f'<td>{_esc(v["cause"])}</td>'
+        f'<td class="sim">{v["conf"]:.2f}</td></tr>'
+        for v in votes)
+    votes_html = (f'<table class="fm-tbl"><thead><tr><th>specialist</th>'
+                  f'<th>hypothesis</th><th>conf</th></tr></thead>'
+                  f'<tbody>{vote_rows}</tbody></table>')
+
+    actions = verdict.get("actions") or []
+    actions_html = "".join(f'<li>{_esc(a)}</li>' for a in actions) or "<li>—</li>"
+
+    return (
+        f'<div class="fm-title">multi-agent debate (Process / Materials / Reliability)</div>'
+        f'{votes_html}'
+        f'<div class="fm-title" style="margin-top:14px">winning root cause</div>'
+        f'<div class="fm-badge novel" style="white-space:normal">'
+        f'{_esc(verdict["winning_cause"])} '
+        f'<span style="font-weight:400"> &middot; conf {verdict.get("conf", 0):.2f}</span></div>'
+        f'<div class="fm-empty" style="margin-top:8px">{_esc(verdict.get("rationale", ""))}</div>'
+        f'<div class="fm-title" style="margin-top:14px">recommended actions</div>'
+        f'<ul class="fm-tbl" style="color:#e6edf4;padding-left:18px">'
+        f'{actions_html}</ul>'
+    )
+
+
 def analyze(image_path):
     if not image_path:
         idle = '<div class="fm-badge idle">Awaiting a part&hellip;</div>'
@@ -187,7 +226,12 @@ def build():
         gr.HTML('<div class="fm-sec">04 &mdash; Knowledge graph &amp; memory</div>')
         kg_html = gr.HTML('<div class="fm-empty">Awaiting inspection&hellip;</div>')
 
-        gr.HTML('<div class="fm-sec">05 &mdash; Teach &amp; learn</div>')
+        gr.HTML('<div class="fm-sec">05 &mdash; AI root-cause analysis</div>')
+        with gr.Row():
+            rca_btn = gr.Button("Explain root cause (multi-agent)", variant="primary")
+        rca_html = gr.HTML('<div class="fm-empty">Run an inspection, then ask ForgeMind to explain why.</div>')
+
+        gr.HTML('<div class="fm-sec">06 &mdash; Teach &amp; learn</div>')
         with gr.Row():
             with gr.Column(elem_classes="fm-card"):
                 label_in = gr.Textbox(label="Correct defect label",
@@ -200,6 +244,7 @@ def build():
         run_btn.click(analyze, inputs=img, outputs=outputs)
         img.upload(analyze, inputs=img, outputs=outputs)
         teach_btn.click(teach, inputs=[img, label_in], outputs=learn_html)
+        rca_btn.click(_rca_html, inputs=img, outputs=rca_html)
 
     return demo
 

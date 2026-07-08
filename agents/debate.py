@@ -1,25 +1,60 @@
-"""STAGE 8 - Multi-Agent Debate (Visual / History / Metadata agents).
+"""STAGE 8 - Multi-Agent Debate for Root-Cause Analysis.
 
-Real algorithm: each agent builds a prompt and calls the LOCAL LLM
-(Qwythos) at http://localhost:11434/v1 (OpenAI-compatible). Keep
-temperature low (0.1-0.3) for stable JSON. Parse {cause, conf}.
+Three specialist agents (Process / Materials / Reliability) each propose a
+root-cause hypothesis grounded in the defect, factory metadata, similar past
+cases, and the Knowledge Graph. Returns structured votes.
 
 Contract:
-  run_debate(visual_ctx, history_ctx, metadata, chains)
-      -> list[{"agent", "cause", "conf"}]
+  run_debate(defect, metadata, similar_cases, kg_info, use_llm=True)
+      -> list[{"agent", "role", "cause", "reasoning", "conf"}]
 """
 from __future__ import annotations
 
+from agents.llm import chat, parse_json, available
+from agents import prompts
 
-def run_debate(visual_ctx, history_ctx, metadata, chains):
-    # ---- SCAFFOLD DUMMY (replace with 3 Qwythos calls) ----
-    return [
-        {"agent": "visual",   "cause": "overheating",       "conf": 0.70},
-        {"agent": "history",  "cause": "poor cooling",      "conf": 0.60},
-        {"agent": "metadata", "cause": "material fatigue",  "conf": 0.55},
-    ]
-    # TODO: for each specialist, build prompt + call:
-    #   from openai import OpenAI
-    #   llm = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
-    #   r = llm.chat.completions.create(model="qwythos", messages=[...])
-    #   votes.append(parse_json(r.choices[0].message.content))
+ROLES = {
+    "process": "Process Engineer",
+    "materials": "Materials Scientist",
+    "reliability": "Reliability & Quality Engineer",
+}
+
+
+def _fallback(agent: str, defect: str, kg_info: dict) -> tuple:
+    fix = (kg_info or {}).get("fix", "Review process parameters.")
+    causes = (kg_info or {}).get("causes", [])
+    cond = causes[0]["condition"] if causes else "unknown condition"
+    reasons = {
+        "process": f"Process drift suspected (KG links {defect} to {cond}). {fix}",
+        "materials": f"Material/supplier factor suspected (KG links {defect} to {cond}). {fix}",
+        "reliability": f"Systemic/equipment factor suspected (KG links {defect} to {cond}). {fix}",
+    }
+    return (defect + " — " + cond, reasons.get(agent, fix), 0.5)
+
+
+def run_debate(defect, metadata, similar_cases, kg_info, use_llm: bool = True) -> list:
+    similar_labels = [c.get("label") for c in (similar_cases or [])[:3]]
+    votes = []
+    for agent, system, user in prompts.build_debate_prompts(
+        defect, metadata, similar_labels, kg_info
+    ):
+        if use_llm and available():
+            raw = chat(system, user)
+            data = parse_json(raw, default={})
+            cause = data.get("cause") or f"{defect} (undetermined)"
+            reasoning = data.get("reasoning") or (raw or "")[:280]
+            try:
+                conf = float(data.get("conf", 0.5))
+            except Exception:
+                conf = 0.5
+        else:
+            cause, reasoning, conf = _fallback(agent, defect, kg_info)
+
+        votes.append({
+            "agent": agent,
+            "role": ROLES[agent],
+            "cause": cause,
+            "reasoning": reasoning,
+            "conf": round(conf, 2),
+        })
+    return votes
