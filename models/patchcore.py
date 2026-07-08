@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as T
-from torchvision.models import wide_resnet50_2, WideResNet50_Weights
+from torchvision.models import wide_resnet50_2
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
@@ -13,7 +13,7 @@ import faiss
 class PatchCore:
     def __init__(self, device=None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        backbone = wide_resnet50_2(weights=WideResNet50_Weights.IMAGENET1K_V1)
+        backbone = wide_resnet50_2(pretrained=True)
         self.backbone = torch.nn.Sequential(*list(backbone.children())[:7])
         self.backbone.eval().to(self.device)
         self.memory_bank = None
