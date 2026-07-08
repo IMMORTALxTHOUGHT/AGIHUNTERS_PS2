@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import html
 import os
+import glob
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -266,6 +268,57 @@ def teach(image_path, label):
             f'{know["summary"]["inspections"]} inspections recorded so far.</div>')
 
 
+def _batch_inspect(folder):
+    empty = '<div class="fm-empty">Select a folder of parts first.</div>'
+    if not folder:
+        return (empty, None)
+
+    paths = []
+    for ext in ("*.png", "*.jpg", "*.jpeg", "*.bmp"):
+        paths += glob.glob(os.path.join(folder, "**", ext), recursive=True)
+    paths = sorted(paths)
+    if not paths:
+        return ('<div class="fm-empty">No images found in that folder.</div>', None)
+
+    rows, gallery, dist = [], [], Counter()
+    for path in paths:
+        try:
+            result = infer_one(path)
+        except Exception:
+            continue
+        # auto-log every part so Analytics + Knowledge Graph grow from the batch
+        _memory.record_inspection(result, path)
+
+        defect = result["defect"]
+        dist[defect] += 1
+        overlay = cv2.cvtColor(result["heatmap_overlay"], cv2.COLOR_BGR2RGB)
+        sim = (result["similar_cases"][0].get("label", "-")
+               if result["similar_cases"] else "-")
+        rows.append((os.path.basename(path), defect,
+                     f'{result["vit_confidence"]:.2f}',
+                     f'{result["anomaly_score"]:.2f}',
+                     "YES" if result["is_novel_defect"] else "no", sim))
+        if len(gallery) < 24:
+            gallery.append((overlay, f'{os.path.basename(path)} · {defect}'))
+
+    if not rows:
+        return ('<div class="fm-empty">No images could be processed.</div>', None)
+
+    trs = "".join(
+        f'<tr><td>{_esc(r[0])}</td><td>{_esc(r[1])}</td><td>{r[2]}</td>'
+        f'<td>{r[3]}</td><td>{r[4]}</td><td>{_esc(r[5])}</td></tr>'
+        for r in rows)
+    dist_html = " · ".join(f'{_esc(k)}: {v}' for k, v in dist.most_common())
+    table = (
+        f'<div class="fm-empty">{len(rows)} parts inspected · '
+        f'distribution: {dist_html}</div>'
+        f'<table class="fm-tbl"><thead><tr><th>file</th><th>defect</th>'
+        f'<th>conf</th><th>anomaly</th><th>novel</th><th>top similar</th>'
+        f'</tr></thead><tbody>{trs}</tbody></table>'
+    )
+    return (table, gallery)
+
+
 def build():
     import gradio as gr
 
@@ -326,6 +379,18 @@ def build():
         refresh_btn.click(_analytics_payload,
                           inputs=None,
                           outputs=[dna_img, health_html, cal_img, calib_html])
+
+        gr.HTML('<div class="fm-sec">08 &mdash; Batch inspect a folder</div>')
+        with gr.Row():
+            with gr.Column(scale=8, elem_classes="fm-card"):
+                folder_in = gr.Directory(label="Folder of parts")
+            with gr.Column(scale=2, elem_classes="fm-card"):
+                batch_btn = gr.Button("Inspect folder", variant="primary")
+        batch_table = gr.HTML('<div class="fm-empty">Select a folder, then inspect.</div>')
+        batch_gallery = gr.Gallery(label="Heatmap overlays (up to 24)", height=300)
+
+        batch_btn.click(_batch_inspect, inputs=folder_in,
+                        outputs=[batch_table, batch_gallery])
 
     return demo
 
