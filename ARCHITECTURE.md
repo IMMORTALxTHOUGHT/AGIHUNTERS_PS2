@@ -14,17 +14,16 @@
 ### MUST (the spine — build first, end-to-end)
 1. **Vision Detector — PatchCore** → anomaly score + heatmap + cropped ROI
 2. **Defect Classifier — ViT** (fine-tuned on MVTec/NEU/DAGM) → defect type
-3. **Few-Shot Learning — Prototypical Network** → rare/unseen defect classification
-4. **FAISS Retrieval + Synthetic Factory Metadata** → historical cases
-5. **Multi-Agent Debate RCA Engine** (local LLM Qwythos) → root cause
-6. **Self-Learning Memory + Human Feedback Loop** → FAISS/KG/SQLite upsert every inspection
-7. **Gradio Dashboard + Explainable Report**
+3. **FAISS Retrieval + Synthetic Factory Metadata** → historical cases
+4. **Multi-Agent Debate RCA Engine** (local LLM Qwythos) → root cause
+5. **Gradio Dashboard + Explainable Report**
 
 ### SHOULD (cheap "wow" — layer on top of the spine)
-8. **Knowledge Graph** → similar failure chains
-9. **Defect DNA** → PCA 2D embedding space
-10. **Confidence Calibration** → decomposed sub-scores
-11. **Factory Health Score** → aggregate risk
+6. **Knowledge Graph** → similar failure chains
+7. **Defect DNA** → PCA 2D embedding space
+8. **Confidence Calibration** → decomposed sub-scores
+9. **Factory Health Score** → aggregate risk
+10. **Self-Learning Memory** → FAISS/KG upsert every inspection
 
 ### DEFER (only if spine ships)
 - Vision LLM (Qwen2.5-VL) — we already have text Qwythos
@@ -41,8 +40,7 @@
 |---|---|---|
 | Compute | RTX A5000 24GB, CUDA 12.4 | torch cu124 |
 | Vision detect | PatchCore (torchvision features) | SOTA, training-FREE |
-| Classifier (base) | ViT-B/16 fine-tuned | strong, fast on A5000 |
-| Few-shot classifier | Prototypical Network (embedding-space) | rare/unseen defects, no extra training |
+| Classifier | ViT-B/16 fine-tuned | strong, fast on A5000 |
 | Vector store | FAISS (CPU) | already installed |
 | Graph | NetworkX + pyvis | failure chains |
 | Orchestration | LangGraph | agent debate flow |
@@ -61,26 +59,21 @@ flowchart TD
     A[Upload Image] --> B[Synthetic Metadata Parser]
     A --> C[Vision Detector: PatchCore]
     C -->|heatmap + ROI| D[Defect Classifier: ViT]
-    D -->|conf >= threshold| E[Embedder: ViT features]
-    D -->|conf < threshold| F[Few-Shot Classifier: Prototypical Net]
-    F -->|defect type| E
-    F -->|distance > epsilon| G[Flag: Novel Defect]
-    G --> E
-    E --> H[FAISS Retrieval: similar cases]
-    B --> I[Knowledge Graph: failure chains]
-    H --> J[Multi-Agent Debate RCA]
-    I --> J
-    B --> J
-    E --> K[Defect DNA: PCA 2D]
-    J --> L[Confidence Calibration]
-    L --> M[Factory Health Score]
-    J --> N[Recommendation Generator]
-    H --> O[Self-Learning Memory Upsert + Feedback]
-    O --> H
-    M --> P[Dashboard + Explainable Report]
-    N --> P
-    K --> P
-    G -.-> P
+    D -->|defect type| E[Embedder: ViT features]
+    E --> F[FAISS Retrieval: similar cases]
+    B --> G[Knowledge Graph: failure chains]
+    F --> H[Multi-Agent Debate RCA]
+    G --> H
+    B --> H
+    E --> I[Defect DNA: PCA 2D]
+    H --> J[Confidence Calibration]
+    J --> K[Factory Health Score]
+    H --> L[Recommendation Generator]
+    F --> M[Self-Learning Memory Upsert]
+    K --> N[Dashboard + Explainable Report]
+    L --> N
+    I --> N
+    M --> F
 ```
 
 ---
@@ -249,61 +242,7 @@ for n,p in model.named_parameters():
 
 **Rookie notes:** `num_classes` = number of defect categories across
 MVTec+NEU+DAGM combined (or per-dataset). `class_confidence = prob[argmax]`.
-**Connects to:** Stage 4b (few-shot fallback when conf < threshold), Stage 5 (embedding), Stage 8 (debate visual agent).
-
----
-
-## STAGE 4b — Few-Shot Classifier: Prototypical Network  *(SPINE — rare/unseen defects)*
-
-**Goal:** Classify rare defect types from only 1–5 examples, and flag truly unseen/novel defects.
-
-**Inputs:** `embedding (768,)` from Stage 5, ViT `class_confidence`, `support_set: dict[class_name -> list[embedding]]`.
-
-**Outputs:** `fewshot_defect_type: str`, `fewshot_confidence: float`, `is_novel: bool`, `prototype_distances: dict`.
-
-**How it works:**
-- Maintain a **support set** of labeled embeddings for rare defect classes (crack, scratch, dent, rust, inclusion…).
-- For each class, compute its **prototype** = mean of all support embeddings for that class (L2-normalized).
-- On a new query embedding `e`:
-  1. Compute cosine / L2 distance to every prototype.
-  2. `predicted_class = argmin(distance)`, `confidence = 1 - normalized(distance)`.
-  3. If **min distance > ε** (learned threshold), flag `is_novel = True` — this is an unseen defect type.
-  4. If ViT confidence >= threshold (0.7), use ViT result directly. Otherwise, use few-shot prediction.
-- **Support set growth:** every inspection verified by human feedback (Stage 12) adds its embedding to the support set, expanding coverage over time.
-
-**Minimal code:**
-```python
-import numpy as np
-from sklearn.preprocessing import normalize
-
-class PrototypicalFewShot:
-    def __init__(self):
-        self.prototypes = {}       # class_name -> (768,) L2-normalized
-        self.support_set = {}      # class_name -> list[(768,)]
-        self.novel_threshold = 0.3 # tuned on validation
-
-    def add_support(self, label, embedding):
-        self.support_set.setdefault(label, []).append(embedding)
-        self.prototypes[label] = normalize(np.mean(self.support_set[label], axis=0, keepdims=True))[0]
-
-    def predict(self, embedding):
-        embedding = normalize(embedding.reshape(1, -1))[0]
-        distances = {cls: np.linalg.norm(embedding - proto)
-                     for cls, proto in self.prototypes.items()}
-        best_class = min(distances, key=distances.get)
-        best_dist = distances[best_class]
-        confidence = float(np.exp(-best_dist))  # convert distance to 0-1
-        is_novel = best_dist > self.novel_threshold
-        return best_class, confidence, is_novel, distances
-```
-
-**How it handles rare/unseen defects:**
-- **Rare defects** (few examples): prototypes computed from as few as 1 embedding. As more examples arrive via Stage 12, prototypes stabilize.
-- **Unseen defects**: if `is_novel`, the system flags the defect for human review and stores it as a new candidate class. After human labels it, it joins the support set.
-- **Cold start**: seed the support set with ViT-classified high-confidence examples during initial deployment.
-
-**Rookie notes:** No separate training needed — prototypes are just class-average embeddings. The "learning" happens as the support set grows. The `novel_threshold` is the only hyperparameter. Start with 0.3 and tune on validation.
-**Connects to:** Stage 5 (embedder feeds the embedding), Stage 6 (FAISS retrieves similar few-shot cases), Stage 8 (visual agent gets rare-defect context), Stage 12 (adds verified embeddings to support set).
+**Connects to:** Stage 5 (embedding), Stage 8 (debate visual agent).
 
 ---
 
@@ -328,7 +267,7 @@ with torch.no_grad():
 
 **Rookie notes:** Same network, two jobs (classify + embed). Don't load
 it twice if RAM is tight — just call different parts.
-**Connects to:** Stage 4b (few-shot classifier gets the embedding), Stage 6 (FAISS), Stage 9 (DNA), Stage 12 (memory).
+**Connects to:** Stage 6 (FAISS), Stage 9 (DNA), Stage 12 (memory).
 
 ---
 
@@ -509,35 +448,30 @@ factory_pct = 100 * sum(health.values())/len(health)
 
 ---
 
-## STAGE 12 — Self-Learning Memory + Human Feedback Loop  *(SPINE)*
-**Goal:** Every inspection makes the system smarter — FAISS, KG, few-shot support set, and SQLite all update permanently.
+## STAGE 12 — Self-Learning Memory Update  *(ADDED)*
+**Goal:** Every inspection makes the system smarter.
 
-**Inputs:** `embedding`, `metadata`, `defect_type` (ViT or few-shot), `rca`, `human_feedback: dict{correct_defect, correct_rca, is_novel}`.
-**Outputs:** persistent updates to FAISS + KG + SQLite + few-shot support set.
+**Inputs:** `embedding`, `metadata`, `defect_type`, `rca`, optional human feedback.
+**Outputs:** persistent updates to FAISS + KG + SQLite.
 
-**How it works (all mandatory):**
-1. **FAISS**: `index.add(embedding.reshape(1,-1))` → future retrievals include this case.
-2. **SQLite**: `INSERT INTO cases` the full record (defect_type, metadata, rca, embedding_id, timestamp).
-3. **KG**: `KG.add_edge(defect_type, rca.winning_cause)` → strengthens the causal chain.
-4. **Few-shot support set**: if human feedback confirms or corrects the defect type, `fewshot.add_support(correct_defect, embedding)` → rare-defect coverage expands.
-5. **Human feedback penalties**: if human marks RCA as wrong, store a `feedback_penalty` record in SQLite. The confidence calibration (Stage 10) reads recent penalties to down-weight unreliable agents.
-6. **Novel class registration**: if `is_novel` (from Stage 4b) and human assigns a label, create a new prototype in the few-shot support set.
+**How it works:**
+- `index.add(embedding.reshape(1,-1))` → future retrievals include it.
+- `case_db.append({...})` (parallel to FAISS IDs).
+- `KG.add_edge(defect_type, rca.cause)` → strengthens chains.
+- `sqlite: INSERT` the full record for audits.
+- **Optional feedback loop:** if a human marks RCA wrong, store a penalty
+  that lowers `consensus` weight next time.
 
 **Minimal code:**
 ```python
 index.add(e.reshape(1,-1)); case_db.append(record)
 G.add_edge(defect_type, rca["winning_cause"])
 cur.execute("INSERT INTO cases VALUES (?,?,?,?)", (defect_type, json.dumps(meta), rca_text, ts))
-if human_feedback.get("correct_defect"):
-    fewshot.add_support(human_feedback["correct_defect"], e)
-if human_feedback.get("is_novel"):
-    fewshot.add_support(human_feedback["correct_defect"], e)
-if human_feedback.get("rca_wrong"):
-    cur.execute("INSERT INTO penalties VALUES (?,?)", (rca_id, ts))
 ```
 
-**Rookie notes:** This loop is the "it learns" story — every inspection improves FAISS retrieval, KG chains, AND few-shot classification. Human feedback is the supervision signal. Without it the system still learns (more data → better FAISS + KG), but feedback accelerates rare-defect coverage.
-**Connects to:** Stage 4b (support set growth), Stage 6 (future retrievals), Stage 7 (future chains), Stage 10 (feedback penalties adjust calibration).
+**Rookie notes:** This is the "it learns" story. Cheap to implement, huge
+demo value. Just don't skip the SQLite row or you lose audit trail.
+**Connects to:** Stage 6 (future retrievals), Stage 7 (future chains).
 
 ---
 
@@ -601,53 +535,41 @@ Test `pipeline_run` standalone first, then wire the button.
 
 ```
 image
-  ├─> metadata (synthetic)                [2]
-  ├─> PatchCore -> heatmap + ROI          [3]
-  ├─> ViT -> defect_type                  [4]
-  ├─> ViT conf < threshold -> FewShot     [4b]
-  │     ├─> rare defect (classified)
-  │     └─> novel defect (flagged)
-  ├─> ViT features -> embedding           [5]
-  ├─> FAISS -> past cases                 [6]
-  ├─> KG -> failure chains                [7]
-  ├─> Debate (Visual+History+Meta)        [8]
-  ├─> PCA DNA point                       [9]
-  ├─> Confidence calibration              [10]
-  ├─> Factory health update               [11]
-  ├─> Memory upsert (FAISS+KG+SQLite)     [12]
-  │     └─> Few-shot support set update
-  ├─> Recommendation                      [13]
-  └─> Dashboard + Report                  [14]
+  ├─> metadata (synthetic)          [2]
+  ├─> PatchCore -> heatmap + ROI    [3]
+  ├─> ViT -> defect_type            [4]
+  ├─> ViT features -> embedding     [5]
+  ├─> FAISS -> past cases           [6]
+  ├─> KG -> failure chains          [7]
+  ├─> Debate (Visual+History+Meta)  [8]
+  ├─> PCA DNA point                 [9]
+  ├─> Confidence calibration        [10]
+  ├─> Factory health update         [11]
+  ├─> Memory upsert (FAISS+KG)      [12]
+  ├─> Recommendation                [13]
+  └─> Dashboard + Report            [14]
 ```
 
 ---
 
 ## 4. Module → File Map (for scaffolding)
 
-| Module | File |
+| Module | File (planned) |
 |---|---|
-| Global config | `config.py` |
 | Data loaders | `data/loaders.py` |
 | Synthetic metadata | `data/metadata.py` |
 | PatchCore detector | `models/patchcore.py` |
 | ViT classifier | `models/vit_classifier.py` |
-| Few-shot classifier | `models/fewshot.py` |
 | Embedder | `models/embedder.py` |
 | FAISS store | `storage/faiss_store.py` |
-| Database (SQLite CRUD) | `storage/database.py` |
-| Self-learning memory | `storage/memory.py` |
 | Knowledge graph | `storage/knowledge_graph.py` |
 | Debate agents | `agents/debate.py` |
-| Agent prompts | `agents/prompts.py` |
 | RCA moderator | `agents/moderator.py` |
 | Defect DNA | `analytics/dna_pca.py` |
 | Calibration | `analytics/calibration.py` |
 | Health score | `analytics/health.py` |
-| Dashboard app | `dashboard/app.py` |
-| Dashboard components | `dashboard/components.py` |
-| Orchestrator (CLI entry) | `pipeline/run.py` |
-| Inference (single/batch) | `pipeline/inference.py` |
-| Pipeline utilities | `pipeline/utils.py` |
+| Dashboard | `dashboard/app.py` |
+| Orchestrator | `pipeline/run.py` (LangGraph) |
 
 ---
 
@@ -657,12 +579,7 @@ image
    backprop). Save coreset.
 2. **ViT fine-tune** — train head+last layers on labeled defects
    (MVTec/NEU/DAGM) for a few epochs (~1–2h on A5000).
-3. **Few-shot prototype seeding** — run ViT on all labeled training defects,
-   extract embeddings, compute per-class prototypes. No backprop — pure averaging.
-   Seed the support set with high-confidence ViT predictions for cold start.
-4. **Novelty threshold tuning** — hold out 10% of known defects, measure
-   prototype distances, set ε so that 95% of known defects fall below it.
-5. Everything else is **inference / CPU / local-LLM** — no training.
+3. Everything else is **inference / CPU / local-LLM** — no training.
 
 ---
 
