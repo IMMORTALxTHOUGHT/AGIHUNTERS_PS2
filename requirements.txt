@@ -1,0 +1,23 @@
+# NOTE: torch / torchvision are installed separately on the box with
+# the CUDA 12.4 build. Do NOT pip install the default PyPI torch there
+# (driver is too old). On the box run:
+#   pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision
+# Everyone else (CPU dev) can just: pip install torch torchvision
+
+opencv-python
+numpy
+pandas
+matplotlib
+langgraph
+faiss-cpu
+psycopg2-binary
+gradio
+scikit-learn
+tqdm
+pillow
+python-dotenv
+transformers
+timm
+networkx
+pyvis
+openai

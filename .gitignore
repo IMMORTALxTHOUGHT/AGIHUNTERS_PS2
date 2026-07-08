@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Virtual env
+hackathon/
+venv/
+.venv/
+env/
+
+# Datasets (large — keep ONLY on the box, never commit)
+datasets/
+data/raw/
+
+# Model weights (large — keep ONLY on the box)
+models/*.gguf
+models/*.pt
+models/*.onnx
+models/*.bin
+models/*.pth
+
+# Generated outputs / logs
+outputs/
+*.log
+runs/
+
+# Secrets
+.env
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
