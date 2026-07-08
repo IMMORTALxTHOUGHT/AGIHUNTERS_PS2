@@ -56,6 +56,7 @@ class Memory:
             rca={},
             anomaly_score=float(result.get("anomaly_score", 0.0)),
             is_novel=bool(result.get("is_novel_defect", False)),
+            vit_confidence=float(result.get("vit_confidence", 0.0)),
         )
         conn.close()
 
@@ -79,6 +80,7 @@ class Memory:
             rca={},
             anomaly_score=float(result.get("anomaly_score", 0.0)),
             is_novel=False,
+            vit_confidence=float(result.get("vit_confidence", 0.0)),
         )
         conn.close()
 

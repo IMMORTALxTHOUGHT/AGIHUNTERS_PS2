@@ -13,14 +13,19 @@ import os
 import cv2
 import numpy as np
 
-from config import DASHBOARD_PORT
+from config import DASHBOARD_PORT, OUTPUTS_DIR
 from pipeline.inference import infer_one
 from storage import database
 from storage.memory import Memory
 from agents.debate import run_debate
 from agents.moderator import moderate
+from analytics.dna_pca import render_dna_figure
+from analytics.health import health
+from analytics.calibration import calibration_summary, render_calibration_figure
 
 _memory = Memory()
+_DNA_PATH = str(OUTPUTS_DIR / "dna.png")
+_CAL_PATH = str(OUTPUTS_DIR / "calibration.png")
 
 CSS = """
 :root, .gradio-container, .dark {
@@ -171,6 +176,52 @@ def _rca_html(image_path) -> str:
     )
 
 
+def _analytics_payload():
+    conn = database.get_connection()
+    cases = database.get_cases(conn)
+    conn.close()
+    if not cases:
+        empty = '<div class="fm-empty">No inspections recorded yet — run a few inspections first.</div>'
+        return (None, empty, None, empty)
+
+    h = health(cases)
+    calib = calibration_summary(cases)
+    dna_path = render_dna_figure(cases, _DNA_PATH)
+    cal_path = render_calibration_figure(cases, _CAL_PATH)
+
+    tier_cls = ("ok" if h["tier"] == "Good"
+                else "novel" if h["tier"] == "Critical" else "idle")
+    mach = "".join(f'<tr><td>{_esc(k)}</td><td>{v:.0f}%</td></tr>'
+                   for k, v in sorted(h["by_machine"].items()))
+    shift = "".join(f'<tr><td>{_esc(k)}</td><td>{v:.0f}%</td></tr>'
+                    for k, v in sorted(h["by_shift"].items()))
+    health_html = (
+        f'<div class="fm-badge {tier_cls}">Factory health: {h["factory_pct"]:.0f}% '
+        f'&middot; {h["tier"]}</div>'
+        f'<div class="fm-empty" style="margin-top:8px">'
+        f'{h["n"]} inspections &middot; defect rate {h["defect_rate"]:.0f}% '
+        f'&middot; novel rate {h["novel_rate"]:.0f}%</div>'
+        f'<div class="fm-title" style="margin-top:12px">health by machine</div>'
+        f'<table class="fm-tbl"><tbody>{mach}</tbody></table>'
+        f'<div class="fm-title" style="margin-top:12px">health by shift</div>'
+        f'<table class="fm-tbl"><tbody>{shift}</tbody></table>'
+    )
+
+    crows = "".join(
+        f'<tr><td>{b["range"]}</td><td>{b["count"]}</td>'
+        f'<td class="sim">{b["novel_rate"] * 100:.0f}%</td></tr>'
+        for b in calib["bins"])
+    calib_html = (
+        f'<div class="fm-empty">mean conf {calib["mean_conf"]:.2f} &middot; '
+        f'overall novel rate {calib["novel_rate"] * 100:.0f}% '
+        f'(low-conf bins should be mostly novel)</div>'
+        f'<table class="fm-tbl"><thead><tr><th>conf bin</th><th>cases</th>'
+        f'<th>% novel</th></tr></thead><tbody>{crows}</tbody></table>'
+    )
+
+    return (dna_path, health_html, cal_path, calib_html)
+
+
 def analyze(image_path):
     if not image_path:
         idle = '<div class="fm-badge idle">Awaiting a part&hellip;</div>'
@@ -240,11 +291,28 @@ def build():
             with gr.Column(elem_classes="fm-card"):
                 learn_html = gr.HTML('<div class="fm-empty">Awaiting feedback.</div>')
 
+        gr.HTML('<div class="fm-sec">07 &mdash; Analytics (from inspection history)</div>')
+        with gr.Row():
+            refresh_btn = gr.Button("Refresh analytics", variant="primary")
+        with gr.Row():
+            with gr.Column(scale=5, elem_classes="fm-card"):
+                dna_img = gr.Image(label="Defect-DNA (PCA)", height=300)
+            with gr.Column(scale=5, elem_classes="fm-card"):
+                health_html = gr.HTML('<div class="fm-empty">Awaiting data.</div>')
+        with gr.Row():
+            with gr.Column(scale=6, elem_classes="fm-card"):
+                cal_img = gr.Image(label="Confidence calibration", height=260)
+            with gr.Column(scale=4, elem_classes="fm-card"):
+                calib_html = gr.HTML('<div class="fm-empty">Awaiting data.</div>')
+
         outputs = [overlay, badge, similar_html, meta_html, kg_html]
         run_btn.click(analyze, inputs=img, outputs=outputs)
         img.upload(analyze, inputs=img, outputs=outputs)
         teach_btn.click(teach, inputs=[img, label_in], outputs=learn_html)
         rca_btn.click(_rca_html, inputs=img, outputs=rca_html)
+        refresh_btn.click(_analytics_payload,
+                          inputs=None,
+                          outputs=[dna_img, health_html, cal_img, calib_html])
 
     return demo
 
