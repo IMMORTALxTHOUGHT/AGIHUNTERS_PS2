@@ -27,8 +27,9 @@ class PatchCore:
     def _extract_features(self, img_tensor):
         with torch.no_grad():
             features = self.backbone(img_tensor)
+            b, c, h, w = features.shape
             features = features.permute(0, 2, 3, 1)
-            return features.reshape(-1, 1024).cpu().numpy()
+            return features.reshape(-1, c).cpu().numpy(), (h, w)
 
     def build_memory(self, mvtec_root: str, coreset_fraction: float = 0.1):
         good_dirs = sorted(Path(mvtec_root).glob("*/train/good"))
@@ -42,7 +43,7 @@ class PatchCore:
                     continue
                 img = Image.open(img_path).convert("RGB")
                 tensor = self.transform(img).unsqueeze(0).to(self.device)
-                feats = self._extract_features(tensor)
+                feats, _ = self._extract_features(tensor)
                 all_features.append(feats)
 
         all_features = np.concatenate(all_features, axis=0).astype(np.float32)
@@ -72,8 +73,8 @@ class PatchCore:
             image = Image.open(image).convert("RGB")
         orig_size = image.size
         tensor = self.transform(image).unsqueeze(0).to(self.device)
-        feats = self._extract_features(tensor).astype(np.float32)
-        patch_h = patch_w = 28
+        feats, (patch_h, patch_w) = self._extract_features(tensor)
+        feats = feats.astype(np.float32)
 
         if self.index is not None and self.index.ntotal > 0:
             D, _ = self.index.search(feats, 1)
