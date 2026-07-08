@@ -2,14 +2,13 @@
 
 Dashboard and CLI both call infer_one().
 """
-import numpy as np
-from PIL import Image
-
 from config import (
     VIT_CONF_THRESHOLD,
     FAISS_TOP_K,
     MODEL_WEIGHTS,
 )
+from data.loaders import load_image
+from data.metadata import make_metadata
 from models.patchcore import PatchCore
 from models.vit_classifier import load_model
 from models.embedder import Embedder
@@ -44,10 +43,12 @@ def _init_models():
 def infer_one(image_path: str) -> dict:
     _init_models()
 
-    img = Image.open(image_path).convert("RGB")
-    result = _pc.predict(img)
-    cls = _model.predict(img, _label_map)
-    vec = _emb.encode(img)
+    img_pil, _, _ = load_image(image_path)
+    meta = make_metadata(image_path)
+
+    result = _pc.predict(img_pil)
+    cls = _model.predict(img_pil, _label_map)
+    vec = _emb.encode(img_pil)
 
     is_novel = cls["confidence"] < VIT_CONF_THRESHOLD
     similar = _store.search(vec, k=FAISS_TOP_K) if _store else []
@@ -62,6 +63,7 @@ def infer_one(image_path: str) -> dict:
         "is_novel_defect": is_novel,
         "embedding": vec,
         "similar_cases": similar,
+        "metadata": meta,
     }
 
 

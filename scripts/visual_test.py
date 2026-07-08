@@ -74,6 +74,10 @@ def run_visual_test(image_path: str, out_dir: str = "outputs/visual_tests"):
     print(f"Prediction    : {result['defect']} (conf={result['vit_confidence']:.3f})")
     print(f"Novel defect  : {result['is_novel_defect']}")
     print(f"Similar cases : {len(similar)}")
+    if "metadata" in result:
+        print("Metadata      :")
+        for k, v in result["metadata"].items():
+            print(f"   {k}: {v}")
     for s in similar:
         print(f"   - {s['label']} (sim={s['similarity']:.3f})")
     return out_path
