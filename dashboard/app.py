@@ -269,7 +269,7 @@ def teach(image_path, label):
 
 
 def _batch_inspect(folder):
-    empty = '<div class="fm-empty">Select a folder of parts first.</div>'
+    empty = '<div class="fm-empty">Enter a folder path first.</div>'
     if not folder:
         return (empty, None)
 
@@ -383,10 +383,13 @@ def build():
         gr.HTML('<div class="fm-sec">08 &mdash; Batch inspect a folder</div>')
         with gr.Row():
             with gr.Column(scale=8, elem_classes="fm-card"):
-                folder_in = gr.Directory(label="Folder of parts")
+                folder_in = gr.Textbox(
+                    label="Folder path of parts",
+                    placeholder="/abs/path/to/folder (e.g. datasets/mvtec/bottle/test/broken_large)",
+                    lines=1)
             with gr.Column(scale=2, elem_classes="fm-card"):
                 batch_btn = gr.Button("Inspect folder", variant="primary")
-        batch_table = gr.HTML('<div class="fm-empty">Select a folder, then inspect.</div>')
+        batch_table = gr.HTML('<div class="fm-empty">Enter a folder path, then inspect.</div>')
         batch_gallery = gr.Gallery(label="Heatmap overlays (up to 24)", height=300)
 
         batch_btn.click(_batch_inspect, inputs=folder_in,
