@@ -82,6 +82,20 @@ class KnowledgeGraph:
         # compat shim for the documented contract
         self.cond_counts.setdefault(defect, Counter())[condition] += 1
 
+    def add_rca(self, defect: str, winning_cause: str, actions: list) -> None:
+        """Grow the graph from an LLM root-cause analysis: the winning cause
+        and each recommended action become new edges for this defect, so the
+        knowledge graph accumulates learned root causes over time."""
+        if not defect:
+            return
+        cc = self.cond_counts.setdefault(defect, Counter())
+        if winning_cause:
+            cc[f"cause:{winning_cause}"] += 1
+        for a in (actions or []):
+            if a:
+                cc[f"fix:{a}"] += 1
+        self.save()
+
     # ---------- query ----------
     def get_causes(self, defect: str, top_k: int = 4) -> list:
         cc = self.cond_counts.get(defect)

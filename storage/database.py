@@ -78,6 +78,12 @@ def get_cases(conn: sqlite3.Connection, limit: int = 100000) -> list:
     return out
 
 
+def update_case_rca(conn: sqlite3.Connection, case_id: int, rca: dict) -> None:
+    conn.execute("UPDATE cases SET rca_json = ? WHERE id = ?",
+                 (json.dumps(rca), case_id))
+    conn.commit()
+
+
 def insert_penalty(conn: sqlite3.Connection, rca_id: str) -> None:
     conn.execute("INSERT INTO penalties (rca_id) VALUES (?)", (rca_id,))
     conn.commit()

@@ -24,6 +24,7 @@ from analytics.health import health
 from analytics.calibration import calibration_summary, render_calibration_figure
 
 _memory = Memory()
+_last_case_id: dict = {}
 _DNA_PATH = str(OUTPUTS_DIR / "dna.png")
 _CAL_PATH = str(OUTPUTS_DIR / "calibration.png")
 
@@ -162,7 +163,11 @@ def _rca_html(image_path) -> str:
     actions = verdict.get("actions") or []
     actions_html = "".join(f'<li>{_esc(a)}</li>' for a in actions) or "<li>—</li>"
 
-    return (
+    # persist verdict into the case row + grow the knowledge graph
+    case_id = _last_case_id.get(image_path)
+    _memory.record_rca(case_id, defect, verdict)
+
+    rca_block = (
         f'<div class="fm-title">multi-agent debate (Process / Materials / Reliability)</div>'
         f'{votes_html}'
         f'<div class="fm-title" style="margin-top:14px">winning root cause</div>'
@@ -173,7 +178,13 @@ def _rca_html(image_path) -> str:
         f'<div class="fm-title" style="margin-top:14px">recommended actions</div>'
         f'<ul class="fm-tbl" style="color:#e6edf4;padding-left:18px">'
         f'{actions_html}</ul>'
+        f'<div class="fm-empty" style="margin-top:8px">&#10003; Saved to case #{case_id} '
+        f'&amp; added to knowledge graph.</div>'
     )
+    # refresh the KG panel so the RCA-derived cause/fix edges are visible
+    result = infer_one(image_path)
+    kg_block = _kg_html(result)
+    return (rca_block, kg_block)
 
 
 def _analytics_payload():
@@ -232,8 +243,10 @@ def analyze(image_path):
     overlay_bgr = result["heatmap_overlay"]
     overlay_rgb = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
 
-    # self-learning memory: persist every inspection
-    _memory.record_inspection(result, image_path)
+    # self-learning memory: persist every inspection (keep first case id)
+    case_id = _memory.record_inspection(result, image_path)
+    if case_id is not None:
+        _last_case_id[image_path] = case_id
 
     return (overlay_rgb, _badge(result), _similar_html(result),
             _meta_html(result), _kg_html(result))
@@ -309,7 +322,7 @@ def build():
         run_btn.click(analyze, inputs=img, outputs=outputs)
         img.upload(analyze, inputs=img, outputs=outputs)
         teach_btn.click(teach, inputs=[img, label_in], outputs=learn_html)
-        rca_btn.click(_rca_html, inputs=img, outputs=rca_html)
+        rca_btn.click(_rca_html, inputs=img, outputs=[rca_html, kg_html])
         refresh_btn.click(_analytics_payload,
                           inputs=None,
                           outputs=[dna_img, health_html, cal_img, calib_html])

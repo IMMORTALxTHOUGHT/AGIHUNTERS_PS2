@@ -108,6 +108,17 @@ class Memory:
         conn.close()
         return [dict(r) for r in rows]
 
+    def record_rca(self, case_id: int | None, defect: str, verdict: dict) -> None:
+        """Persist an LLM root-cause verdict into the case row and grow the
+        Knowledge Graph with the learned cause + recommended actions."""
+        if case_id is None:
+            return
+        conn = database.get_connection(self.db_path)
+        database.update_case_rca(conn, case_id, verdict)
+        conn.close()
+        self.kg.add_rca(defect, verdict.get("winning_cause"),
+                        verdict.get("actions"))
+
     def get_knowledge(self, defect: str) -> dict:
         return {
             "causes": self.kg.get_causes(defect),
