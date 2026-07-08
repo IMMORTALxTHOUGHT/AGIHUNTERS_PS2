@@ -16,6 +16,9 @@ import numpy as np
 from config import DASHBOARD_PORT
 from pipeline.inference import infer_one
 from storage import database
+from storage.memory import Memory
+
+_memory = Memory()
 
 CSS = """
 :root, .gradio-container, .dark {
@@ -97,35 +100,67 @@ def _meta_html(result: dict) -> str:
             f'<th>value</th></tr></thead><tbody>{trs}</tbody></table>')
 
 
+def _kg_html(result: dict) -> str:
+    defect = result.get("defect", "unknown")
+    know = _memory.get_knowledge(defect)
+    summ = know["summary"]
+
+    causes = know["causes"]
+    if causes:
+        cause_rows = "".join(
+            f'<tr><td>{_esc(c["condition"])}</td>'
+            f'<td>{c["count"]}</td>'
+            f'<td>{c["share"] * 100:.0f}%</td></tr>'
+            for c in causes)
+        causes_html = (f'<table class="fm-tbl"><thead><tr>'
+                        f'<th>associated condition</th><th>seen</th>'
+                        f'<th>share</th></tr></thead><tbody>{cause_rows}'
+                        f'</tbody></table>')
+    else:
+        causes_html = '<div class="fm-empty">Not enough data yet — inspect more parts.</div>'
+
+    fix_html = (f'<div class="fm-badge ok" style="white-space:normal">'
+                f'&#128161; {_esc(know["fix"])}</div>')
+
+    stats = (f'Recorded {summ["inspections"]} inspections across '
+             f'{summ["distinct_defects"]} defect types.')
+
+    return (f'<div class="fm-title">associated conditions for '
+            f'{_esc(defect)}</div>{causes_html}'
+            f'<div class="fm-title" style="margin-top:14px">recommended fix</div>'
+            f'{fix_html}'
+            f'<div class="fm-empty" style="margin-top:10px">{stats}</div>')
+
+
 def analyze(image_path):
     if not image_path:
         idle = '<div class="fm-badge idle">Awaiting a part&hellip;</div>'
-        return (None, idle, '<div class="fm-empty">Awaiting inspection&hellip;</div>',
-                '<div class="fm-empty">Awaiting inspection&hellip;</div>')
+        empty = '<div class="fm-empty">Awaiting inspection&hellip;</div>'
+        return (None, idle, empty, empty, empty)
 
     result = infer_one(image_path)
     overlay_bgr = result["heatmap_overlay"]
     overlay_rgb = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
 
-    return (overlay_rgb, _badge(result), _similar_html(result), _meta_html(result))
+    # self-learning memory: persist every inspection
+    _memory.record_inspection(result, image_path)
+
+    return (overlay_rgb, _badge(result), _similar_html(result),
+            _meta_html(result), _kg_html(result))
 
 
 def teach(image_path, label):
     if not image_path or not label:
         return '<div class="fm-empty">Load a part and enter the correct label.</div>'
-    database.init_db()
-    conn = database.get_connection()
-    case_id = database.insert_case(
-        conn,
-        defect_type=label.strip(),
-        metadata={},
-        rca={},
-        anomaly_score=0.0,
-        is_novel=False,
-    )
-    conn.close()
-    return (f'<div class="fm-badge ok">&#10003; Recorded label '
-            f'&ldquo;{_esc(label.strip())}&rdquo; for case #{case_id}.</div>')
+    # re-run inference to get the verified embedding + metadata
+    result = infer_one(image_path)
+    case_id = _memory.teach(image_path, label, result)
+    know = _memory.get_knowledge(label.strip())
+    return (f'<div class="fm-badge ok">&#10003; Learned label '
+            f'&ldquo;{_esc(label.strip())}&rdquo; (case #{case_id}). '
+            f'Fix: {_esc(know["fix"])}</div>'
+            f'<div class="fm-empty" style="margin-top:8px">'
+            f'{know["summary"]["inspections"]} inspections recorded so far.</div>')
 
 
 def build():
@@ -149,16 +184,19 @@ def build():
         gr.HTML('<div class="fm-sec">03 &mdash; Factory metadata</div>')
         meta_html = gr.HTML('<div class="fm-empty">Awaiting inspection&hellip;</div>')
 
-        gr.HTML('<div class="fm-sec">04 &mdash; Teach &amp; learn</div>')
+        gr.HTML('<div class="fm-sec">04 &mdash; Knowledge graph &amp; memory</div>')
+        kg_html = gr.HTML('<div class="fm-empty">Awaiting inspection&hellip;</div>')
+
+        gr.HTML('<div class="fm-sec">05 &mdash; Teach &amp; learn</div>')
         with gr.Row():
             with gr.Column(elem_classes="fm-card"):
                 label_in = gr.Textbox(label="Correct defect label",
-                                      placeholder="e.g. hairline_crack")
+                                       placeholder="e.g. hairline_crack")
                 teach_btn = gr.Button("Teach ForgeMind", variant="primary")
             with gr.Column(elem_classes="fm-card"):
                 learn_html = gr.HTML('<div class="fm-empty">Awaiting feedback.</div>')
 
-        outputs = [overlay, badge, similar_html, meta_html]
+        outputs = [overlay, badge, similar_html, meta_html, kg_html]
         run_btn.click(analyze, inputs=img, outputs=outputs)
         img.upload(analyze, inputs=img, outputs=outputs)
         teach_btn.click(teach, inputs=[img, label_in], outputs=learn_html)

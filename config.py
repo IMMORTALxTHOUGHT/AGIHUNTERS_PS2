@@ -15,6 +15,7 @@ DATA_PROCESSED = ROOT / "data" / "processed"
 MODEL_WEIGHTS = ROOT / "models" / "weights"
 STORAGE_DIR = ROOT / "storage"
 SQLITE_PATH = STORAGE_DIR / "forge_mind.db"
+KG_PATH = STORAGE_DIR / "knowledge_graph.json"
 REPORTS_DIR = ROOT / "reports"
 OUTPUTS_DIR = ROOT / "outputs"
 
