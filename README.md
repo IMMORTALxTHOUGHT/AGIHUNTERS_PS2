@@ -1,96 +1,106 @@
-# ForgeMind — Autonomous Visual Manufacturing Intelligence System
+# ForgeMind — Explainable Industrial Defect Intelligence
 
-Upload a factory photo → get back: what's wrong, where, why, and what to do about it. All explainable, all local.
+ForgeMind is a fully **local, offline** defect-detection system for heavy-industry
+part inspection. It doesn't just say *what* is wrong — it shows *where* (anomaly
+heatmap), retrieves *similar past cases*, explains *why* (multi-agent LLM
+root-cause analysis), and **learns** from every inspection and from human
+feedback.
 
----
+Everything runs on-premise: vision models, vector retrieval, the knowledge
+graph, and the reasoning LLM (Ollama) — no cloud, no API keys.
 
-## Quick start (no GPU)
+## Features
+
+| Capability | What it does |
+|---|---|
+| **Anomaly detection** | PatchCore memory-bank + heatmap localizes the defect. |
+| **Defect classification** | ViT-B/16 assigns a defect type with confidence. |
+| **Similar-case retrieval** | FAISS finds the closest historical examples. |
+| **Knowledge graph** | Accumulates defect → cause/fix associations from data **and** LLM analysis. |
+| **Multi-agent RCA** | Process / Materials / Reliability agents debate the root cause; a moderator synthesizes a verdict + actions. |
+| **Self-learning memory** | Every inspection is logged; human "Teach" corrections enter the retrieval index. |
+| **Analytics** | Defect-DNA (PCA), factory-health tiers, confidence calibration. |
+| **Batch mode** | Inspect a whole folder at once. |
+
+## Pipeline
+
+```
+image
+  │
+  ├─ PatchCore ─────────────► anomaly score + heatmap overlay
+  ├─ ViT classifier ────────► defect type + confidence
+  ├─ Embedder (256-d) ──────► fingerprint
+  │                              │
+  └──────────────────────────────┘
+                                 ▼
+                            FAISS store ──► similar past cases
+                                 │
+                 Knowledge Graph + Self-Learning Memory (SQLite)
+                                 │
+                    Multi-Agent LLM Root-Cause (Ollama)
+```
+
+## Quick start
 
 ```bash
+# 1. (on the GPU box) create env + install
+python3 -m venv hackathon && source activate hackathon
 pip install -r requirements.txt
-python -m pipeline.run --image any-image.jpg
+
+# 2. ensure the local LLM is running (for root-cause analysis)
+ollama pull qwythos
+ollama serve          # serves OpenAI-compatible API at http://localhost:11434/v1
+
+# 3. run the dashboard
+python3 -m dashboard.app
+# open http://localhost:7860  (or GRADIO_SHARE=1 python3 -m dashboard.app for a public link)
 ```
 
-Every module ships with scaffold dummies — the pipeline runs end-to-end on a laptop to prove wiring. Replace stubs with real logic on the GPU box.
+> Models/weights and datasets are large and kept on the box only (see
+> `.gitignore`). On first run the FAISS store is built automatically from the
+> datasets; it is then cached under `models/weights/`.
 
----
+## Using the dashboard
 
-## How it works in 30 seconds
-
-```
-Upload → PatchCore detects anomaly → ViT classifies it
-        → if ViT is unsure, Few-Shot classifier handles rare defects
-        → FAISS finds similar past cases
-        → 3 AI agents debate the root cause → moderator decides
-        → System remembers everything (learns over time)
-        → Dashboard shows the full story
-```
-
-The system **learns** — every inspection updates FAISS, the knowledge graph, and the few-shot support set so it gets smarter over time.
-
----
+1. **Inspect a part** — upload an image → heatmap, class badge, similar cases, factory metadata.
+2. **Knowledge graph & memory** — associated conditions + recommended fix, accumulated across all inspections.
+3. **AI root-cause analysis** — *Explain root cause* launches the 3-agent debate → winning cause, rationale, and actions (saved to the case).
+4. **Teach & learn** — type the correct label to record a human-verified example into FAISS.
+5. **Analytics** — *Refresh analytics* shows Defect-DNA scatter, factory-health tier, and confidence calibration.
+6. **Batch inspect a folder** — point at a directory to process every image, auto-logging each one.
 
 ## Project layout
 
-| Directory | What's in it |
-|---|---|
-| `data/` | Image loaders + synthetic factory metadata |
-| `models/` | PatchCore (detector), ViT (classifier), Few-Shot (rare defects), Embedder |
-| `agents/` | Multi-agent debate: 3 specialists + moderator + prompt templates |
-| `storage/` | FAISS vector search, knowledge graph, SQLite database, self-learning memory |
-| `analytics/` | Defect DNA (PCA), confidence calibration, factory health score |
-| `dashboard/` | Gradio UI + reusable components |
-| `pipeline/` | Orchestrator (CLI entry), inference, utilities |
-| `config.py` | One file with all paths and hyperparameters |
-
----
-
-## Team task board
-
-Pair names with modules. Each module has a fixed contract (inputs → outputs) so you never need each other's code to develop.
-
-| # | Owner | Modules | Needs GPU? |
-|---|---|---|---|
-| A | data + detect | `data/loaders.py`, `models/patchcore.py` | yes (memory build) |
-| B | classify + embed | `models/vit_classifier.py`, `models/embedder.py` | yes (fine-tune) |
-| C | few-shot | `models/fewshot.py` | no |
-| D | memory + graph | `storage/faiss_store.py`, `storage/knowledge_graph.py`, `storage/database.py` | no |
-| E | memory loop | `storage/memory.py` (self-learning + feedback) | no |
-| F | agents | `agents/debate.py`, `agents/moderator.py`, `agents/prompts.py` | no (local LLM) |
-| G | analytics | `analytics/dna_pca.py`, `analytics/calibration.py`, `analytics/health.py` | no |
-| H | dashboard | `dashboard/app.py`, `dashboard/components.py` | no |
-| I | orchestrator | `pipeline/run.py`, `pipeline/inference.py`, `pipeline/utils.py` | no |
-| J | docs + config | `config.py`, `ARCHITECTURE.md`, `README.md` | no |
-
----
-
-## Git workflow
-
-```bash
-# every member on their laptop
-git checkout -b feature/<module>
-# ... edit your module ...
-git add -A && git commit -m "your message"
-git push -u origin feature/<module>
-# open a PR → lead reviews & merges to main
-
-# on the GPU box (for training / demo):
-git pull
-python -m pipeline.run --image test.jpg
+```
+config.py              central config (paths, thresholds, dims, LLM endpoint)
+pipeline/inference.py  infer_one() — single entry point tying the pipeline together
+models/
+  patchcore.py         anomaly detection + heatmap
+  vit_classifier.py    defect classification (train + predict)
+  embedder.py          256-d normalized embedding for FAISS
+storage/
+  faiss_store.py       vector retrieval
+  database.py          SQLite cases/feedback
+  memory.py            self-learning memory (logs + Teach → FAISS/KG)
+  knowledge_graph.py   data-driven causal graph (grows from inspections + RCA)
+agents/
+  llm.py               OpenAI-compatible client for local Ollama
+  prompts.py           specialist + moderator prompts
+  debate.py            multi-agent root-cause debate
+  moderator.py         synthesizes winning cause + actions
+analytics/
+  dna_pca.py           Defect-DNA PCA (pure numpy)
+  health.py            factory-health tiers
+  calibration.py       confidence calibration summary
+dashboard/app.py       Gradio UI (8 sections)
+scripts/visual_test.py verifies a single image as a 2×3 figure
 ```
 
-**Rule:** git is source of truth, NOT the SSH box. Nobody edits main on the box.
+## Notes
 
----
-
-## Box setup (training owners only)
-
-```bash
-cd /DATA/AGIHUNTERS_PS2
-python -m venv hackathon && source hackathon/bin/activate
-pip install -r requirements.txt
-pip install --index-url https://download.pytorch.org/whl/cu124 torch torchvision
-ollama create qwythos -f Modelfile_qwythos && ollama serve
-```
-
-See `ARCHITECTURE.md` for the full stage-by-stage technical deep dive.
+- **Factory metadata is synthetic but deterministic** (seeded from the filename)
+  so demos are reproducible. Swap `data/metadata.py` for real sensor telemetry
+  to productionize.
+- The system degrades gracefully: if Ollama is unavailable, root-cause analysis
+  falls back to knowledge-graph-grounded hypotheses, and analytics still render.
+- Novel/low-confidence defects are flagged and can be taught via the dashboard.

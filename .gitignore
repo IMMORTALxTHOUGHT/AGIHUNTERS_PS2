@@ -21,6 +21,15 @@ models/*.onnx
 models/*.bin
 models/*.pth
 
+# Generated model artifacts (built once on the box, do not commit)
+*.npy
+models/weights/faiss_store*
+models/weights/mem_bank.npy
+
+# Self-learning memory (generated at runtime)
+storage/knowledge_graph.json
+storage/forge_mind.db
+
 # Generated outputs / logs
 outputs/
 *.log
