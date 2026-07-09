@@ -42,6 +42,7 @@ FALLBACK_FIXES = {
     "thread": "Inspect screw gauge; replace worn tap.",
     "scratch": "Polish contact surfaces; clean transport rollers.",
     "screwed": "Verify fastener spec; torque-check tooling.",
+    "screw_scratch_neck": "Inspect fastener seating; verify torque spec and neck finish for scratch marks.",
     "rough": "Improve surface-finishing pass parameters.",
     "blemish": "Audit surface-contact media cleanliness.",
     "pinhole": "Increase coating thickness; remove solvent bubbles.",
@@ -101,13 +102,29 @@ class KnowledgeGraph:
         cc = self.cond_counts.get(defect)
         if not cc:
             return []
-        total = sum(cc.values())
+        # keep real factory conditions only — learned cause:/fix: edges are
+        # surfaced via get_fix(), not as "associated conditions"
+        real = [(k, c) for k, c in cc.items()
+                if not (k.startswith("cause:") or k.startswith("fix:"))]
+        if not real:
+            return []
+        total = sum(c for _, c in real)
+        n = self.defect_counts.get(defect, 0)
+        real.sort(key=lambda x: -x[1])
         return [
-            {"condition": k, "count": c, "share": c / total}
-            for k, c in cc.most_common(top_k)
+            {"condition": k, "count": c, "share": c / total, "n": n}
+            for k, c in real[:top_k]
         ]
 
     def get_fix(self, defect: str) -> str:
+        # learned fixes (from Teach / multi-agent RCA) take priority over the
+        # static fallback table, so the graph visibly accumulates experience
+        cc = self.cond_counts.get(defect)
+        if cc:
+            fixes = [(k, c) for k, c in cc.items() if k.startswith("fix:")]
+            if fixes:
+                fixes.sort(key=lambda x: -x[1])
+                return fixes[0][0][len("fix:"):]
         if defect in FALLBACK_FIXES:
             return FALLBACK_FIXES[defect]
         lead = defect.split("_")[0]

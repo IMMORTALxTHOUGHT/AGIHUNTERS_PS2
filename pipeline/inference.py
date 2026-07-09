@@ -51,7 +51,10 @@ def infer_one(image_path: str) -> dict:
     vec = _emb.encode(img_pil)
 
     is_novel = cls["confidence"] < VIT_CONF_THRESHOLD
-    similar = _store.search(vec, k=FAISS_TOP_K) if _store else []
+    # search one extra so we can drop the queried image itself (it always
+    # scores 1.000 as its own nearest neighbour) without losing 5 real cases
+    raw = _store.search(vec, k=FAISS_TOP_K + 1) if _store else []
+    similar = [s for s in raw if s.get("path") != image_path][:FAISS_TOP_K]
 
     return {
         "anomaly_score": result["anomaly_score"],

@@ -233,16 +233,29 @@ def build_pdf(image_path: str, result: dict, rca: dict | None,
 
     # 3. similar past cases
     rep.heading("3 . Similar past cases")
+    rep.line("Top visual neighbours from the FAISS memory (self-match excluded).",
+             size=9)
     sim_rows = [[str(i), str(r.get("label", ""))[:30],
-                 f'{r.get("similarity", 0):.3f}', str(fix_for(r.get("label", "")))[:30]]
-                for i, r in enumerate(result.get("similar_cases", [])[:5], 1)]
+                  f'{r.get("similarity", 0):.3f}', str(fix_for(r.get("label", "")))[:30]]
+                 for i, r in enumerate(result.get("similar_cases", [])[:5], 1)]
     rep.table(["case", "defect", "similarity", "resolution / fix"], sim_rows)
 
     # 4. knowledge graph
     rep.heading("4 . Knowledge graph & memory")
-    fix = kg.get_fix(result.get("defect", ""))
-    rep.line(f"Recommended fix for '{result.get('defect', 'unknown')}': {fix}",
-             bold=True)
+    defect = result.get("defect", "unknown")
+    fix = kg.get_fix(defect)
+    rep.line(f"Recommended fix for '{defect}': {fix}", bold=True)
+    causes = kg.get_causes(defect)
+    if causes:
+        n = causes[0].get("n", 0)
+        rep.line(f"Associated conditions for '{defect}' (from {n} inspection(s)):",
+                 bold=True)
+        for c in causes:
+            low = "  [low support]" if c["count"] < 3 else ""
+            rep.line(f"  - {c['condition']}: seen {c['count']} "
+                     f"({c['share'] * 100:.0f}%){low}", size=9)
+    else:
+        rep.line(f"Not enough data yet for '{defect}' — inspect more parts.")
     rep.line(f"Recorded {len(cases)} inspections across the factory so far.")
     rep.gap()
 

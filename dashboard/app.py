@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import os
 import glob
+import base64
 from collections import Counter
 
 import cv2
@@ -96,6 +97,21 @@ CSS = """
   font-family: ui-monospace, monospace; color: #93a1b0; font-size: 12px; }
 .fm-cap { color: #93a1b0; font-size: 12.5px; line-height: 1.5; margin: 8px 2px 2px; }
 .fm-cap b { color: #e6edf4; }
+.fm-thumb { width: 46px; height: 46px; object-fit: cover; border-radius: 8px;
+  border: 1px solid #212b36; background: #0d141b; vertical-align: middle; }
+.fm-simnote { color: #5f6b78; font-size: 11.5px; margin: 6px 0 2px; }
+.fm-kg-row { margin: 10px 0; }
+.fm-kg-top { display: flex; justify-content: space-between; font-size: 12.5px;
+  color: #e6edf4; }
+.fm-kg-top .c { font-family: ui-monospace, monospace; color: #3b82f6; }
+.fm-kg-track { height: 8px; background: #0d141b; border: 1px solid #212b36;
+  border-radius: 5px; overflow: hidden; margin-top: 4px; }
+.fm-kg-fill { height: 100%; background: linear-gradient(90deg,#22c55e,#4ade80); }
+.fm-lowconf { font-size: 10px; color: #ff6a33; font-family: ui-monospace, monospace;
+  text-transform: uppercase; letter-spacing: .06em; margin-left: 8px; }
+.fm-note { color: #93a1b0; font-size: 12px; line-height: 1.55; margin: 4px 0; }
+.fm-note .ok { color: #22c55e; }
+.fm-note .warn { color: #ff6a33; }
 footer, .footer, .show-api { display: none !important; }
 """
 
@@ -119,6 +135,23 @@ def _pct(x) -> str:
         return f"{p:.1f}%"
     except (TypeError, ValueError):
         return str(x)
+
+
+def _thumb_b64(path, max_size=64):
+    """Base64-embed a small thumbnail so past cases render as real images
+    inside the HTML (no external file serving needed). Returns None on any
+    failure so the caller can fall back to a text column."""
+    try:
+        from io import BytesIO
+        from PIL import Image as _PIL
+        img = _PIL.open(path).convert("RGB")
+        img.thumbnail((max_size, max_size))
+        buf = BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return f"data:image/png;base64,{b64}"
+    except Exception:
+        return None
 
 
 def _file_paths(files):
@@ -177,45 +210,112 @@ def _similar_html(result: dict) -> str:
     rows = result.get("similar_cases", [])[:5]
     if not rows:
         return '<div class="fm-empty">No similar cases yet.</div>'
-    trs = "".join(
-        f'<tr><td>{i}</td>'
-        f'<td>{_esc(r.get("label"))}</td>'
-        f'<td class="sim">{r.get("similarity", 0):.3f}</td>'
-        f'<td>{_esc(_memory.get_knowledge(r.get("label", ""))["fix"])}</td></tr>'
-        for i, r in enumerate(rows, 1))
-    return (f'<table class="fm-tbl"><thead><tr><th>case</th>'
-            f'<th>defect</th><th>similarity</th>'
-            f'<th>resolution / fix</th></tr></thead>'
+    trs = ""
+    for i, r in enumerate(rows, 1):
+        label = r.get("label", "")
+        sim = float(r.get("similarity", 0) or 0)
+        fix = _memory.get_knowledge(label)["fix"]
+        thumb = _thumb_b64(r.get("path"))
+        if thumb:
+            td = f'<td><img class="fm-thumb" src="{thumb}" alt=""></td>'
+        else:
+            td = '<td class="fm-thumb" style="text-align:center">—</td>'
+        trs += (
+            f'<tr>{td}'
+            f'<td>{i}</td>'
+            f'<td>{_esc(label)}</td>'
+            f'<td class="sim">{sim:.3f}</td>'
+            f'<td>{_esc(fix)}</td></tr>'
+        )
+    return (f'<div class="fm-simnote">Top visual neighbours from the FAISS memory '
+            f'(cosine similarity, self-match excluded).</div>'
+            f'<table class="fm-tbl"><thead><tr>'
+            f'<th></th><th>#</th><th>defect</th>'
+            f'<th>similarity</th><th>resolution / fix</th></tr></thead>'
             f'<tbody>{trs}</tbody></table>')
+
+
+def _meta_interpret(defect: str, meta: dict) -> str:
+    """Cross-reference the current part's metadata against what the knowledge
+    graph has learned for this defect, so the metadata box drives insight
+    instead of sitting as a static form."""
+    causes = _memory.get_knowledge(defect)["causes"]
+    if not causes:
+        return ('<div class="fm-note">No historical pattern learned for this '
+                'defect yet — inspect more parts to grow the association graph.'
+                '</div>')
+    cond_map = {c["condition"]: c for c in causes}
+    n = causes[0].get("n", 0)
+    lines = []
+    for field in ("Temperature", "Humidity"):
+        val = meta.get(field)
+        if val is None:
+            continue
+        hit = next((c for c in cond_map if c.startswith(f"{field}:")), None)
+        if not hit:
+            continue
+        lo, hi = hit.split(":", 1)[1].split("-")
+        try:
+            lo_f, hi_f = float(lo), float(hi)
+        except ValueError:
+            continue
+        inside = lo_f <= float(val) <= hi_f
+        mark = '<span class="ok">&#10003;</span>' if inside else '<span class="warn">&#9888;</span>'
+        word = "within" if inside else "outside"
+        cls = "ok" if inside else "warn"
+        lines.append(
+            f'{field} <b>{_esc(val)}</b> &mdash; {word} {_esc(defect)}&rsquo;s '
+            f'observed range ({lo}&ndash;{hi}) <span class="{cls}">{mark}</span>')
+    for field in ("Machine", "Operator", "Supplier", "Shift", "Material"):
+        val = meta.get(field)
+        cond = f"{field}:{val}"
+        if cond in cond_map:
+            c = cond_map[cond]
+            lines.append(
+                f'{field} <b>{_esc(val)}</b> &mdash; seen in {c["count"]} of {n} '
+                f'inspections of {_esc(defect)} ({c["share"] * 100:.0f}%)')
+    if not lines:
+        return ('<div class="fm-note">Metadata recorded; no strong link to this '
+                'defect&rsquo;s known conditions yet.</div>')
+    return '<div class="fm-note">' + "<br>".join(lines) + "</div>"
 
 
 def _meta_html(result: dict) -> str:
     meta = result.get("metadata", {})
+    defect = result.get("defect", "unknown")
     if not meta:
         return '<div class="fm-empty">No metadata.</div>'
     trs = "".join(
         f'<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>'
         for k, v in meta.items())
-    return (f'<table class="fm-tbl"><thead><tr><th>field</th>'
-            f'<th>value</th></tr></thead><tbody>{trs}</tbody></table>')
+    tbl = (f'<table class="fm-tbl"><thead><tr><th>field</th>'
+           f'<th>value</th></tr></thead><tbody>{trs}</tbody></table>')
+    return (f'<div class="fm-simnote">Simulated MES metadata &mdash; a stand-in for '
+            f'live factory telemetry (deterministic per image).</div>'
+            f'{tbl}{_meta_interpret(defect, meta)}')
 
 
 def _kg_html(result: dict) -> str:
     defect = result.get("defect", "unknown")
     know = _memory.get_knowledge(defect)
     summ = know["summary"]
-
     causes = know["causes"]
+    n = causes[0].get("n", 0) if causes else 0
+
     if causes:
-        cause_rows = "".join(
-            f'<tr><td>{_esc(c["condition"])}</td>'
-            f'<td>{c["count"]}</td>'
-            f'<td>{c["share"] * 100:.0f}%</td></tr>'
-            for c in causes)
-        causes_html = (f'<table class="fm-tbl"><thead><tr>'
-                        f'<th>associated condition</th><th>seen</th>'
-                        f'<th>share</th></tr></thead><tbody>{cause_rows}'
-                        f'</tbody></table>')
+        rows = ""
+        for c in causes:
+            share = c["share"] * 100
+            width = max(2, min(100, int(share)))
+            low = c["count"] < 3
+            flag = ' <span class="fm-lowconf">low support</span>' if low else ""
+            rows += (
+                f'<div class="fm-kg-row">'
+                f'<div class="fm-kg-top"><span>{_esc(c["condition"])}{flag}</span>'
+                f'<span class="c">{share:.0f}% &middot; seen {c["count"]}</span></div>'
+                f'<div class="fm-kg-track"><div class="fm-kg-fill" '
+                f'style="width:{width}%"></div></div></div>')
+        causes_html = rows
     else:
         causes_html = '<div class="fm-empty">Not enough data yet — inspect more parts.</div>'
 
@@ -225,8 +325,13 @@ def _kg_html(result: dict) -> str:
     stats = (f'Recorded {summ["inspections"]} inspections across '
              f'{summ["distinct_defects"]} defect types.')
 
+    nline = (f'From {n} inspection(s) of {_esc(defect)} — '
+             f'conditions with &lt;3 observations are flagged low support.'
+             if causes else "")
     return (f'<div class="fm-title">associated conditions for '
-            f'{_esc(defect)}</div>{causes_html}'
+            f'{_esc(defect)}</div>'
+            f'<div class="fm-simnote">{nline}</div>'
+            f'{causes_html}'
             f'<div class="fm-title" style="margin-top:14px">recommended fix</div>'
             f'{fix_html}'
             f'<div class="fm-empty" style="margin-top:10px">{stats}</div>')
