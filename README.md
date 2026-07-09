@@ -19,7 +19,7 @@ graph, and the reasoning LLM (Ollama) — no cloud, no API keys.
 | **Knowledge graph** | Accumulates defect → cause/fix associations from data **and** LLM analysis. |
 | **Multi-agent RCA** | Process / Materials / Reliability agents debate the root cause; a moderator synthesizes a verdict + actions. |
 | **Self-learning memory** | Every inspection is logged; human "Teach" corrections enter the retrieval index. |
-| **Analytics** | A plain-language **Factory Report**: overall health, defect-rate, defects-by-type, and health broken down by machine and shift. |
+| **Analytics** | Defect-DNA (PCA), factory-health tiers, confidence calibration. |
 | **Batch mode** | Inspect a whole folder at once. |
 
 ## Pipeline
@@ -69,7 +69,8 @@ python3 -m dashboard.app
 5. **Knowledge graph & memory** — associated conditions + recommended fix, accumulated across all inspections.
 6. **AI root-cause analysis** — *Explain root cause* launches the 3-agent debate → winning cause, rationale, and actions (saved to the case).
 7. **Teach & learn** — type the correct label to record a human-verified example into FAISS.
-8. **Factory report** — *Refresh report* shows the analytics as a plain-language summary: overall health + tier, four summary cards (parts inspected, defect rate, uncertain/novel rate, AI-confident rate), **defects by type**, and health broken down **by machine** and **by shift**. Confidence is capped below 100% everywhere — a model can't predict with absolute certainty.
+8. **Future failure risk** — projected risk if the part stays in service (Now → 24h → 72h → 1 week, with a safe-cycles estimate). Confidence is capped below 100% everywhere — a model can't predict with absolute certainty.
+9. **Analytics** — *Refresh analytics* shows Defect-DNA scatter, factory-health tier, and confidence calibration.
 
 ## Project layout
 

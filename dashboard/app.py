@@ -21,10 +21,14 @@ from storage import database
 from storage.memory import Memory
 from agents.debate import run_debate
 from agents.moderator import moderate
+from analytics.dna_pca import render_dna_figure
 from analytics.health import health
+from analytics.calibration import calibration_summary, render_calibration_figure
 
 _memory = Memory()
 _last_case_id: dict = {}
+_DNA_PATH = str(OUTPUTS_DIR / "dna.png")
+_CAL_PATH = str(OUTPUTS_DIR / "calibration.png")
 
 CSS = """
 :root, .gradio-container, .dark {
@@ -58,24 +62,16 @@ CSS = """
 .fm-tbl td { padding: 7px 8px; border-bottom: 1px solid #212b36; color: #e6edf4; }
 .fm-tbl td.sim { font-family: ui-monospace, monospace; color: #3b82f6; }
 .fm-empty { color: #5f6b78; font-size: 13px; padding: 12px; }
-.fm-report { font-size: 14px; }
-.fm-headline { font-size: 34px; font-weight: 800; line-height: 1.1; }
-.fm-cards { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0 4px; }
-.fm-card2 { flex: 1 1 0; min-width: 120px; background: #0d141b;
-  border: 1px solid #212b36; border-radius: 12px; padding: 14px; text-align: center; }
-.fm-card-v { font-size: 26px; font-weight: 800; color: #e6edf4;
+.fm-progress { height: 10px; border-radius: 6px; background: #0d141b;
+  border: 1px solid #212b36; overflow: hidden; margin: 10px 0 8px; }
+.fm-progress-bar { height: 100%; background: #22c55e; transition: width .3s; }
+.fm-metrics { display: flex; gap: 10px; flex-wrap: wrap; }
+.fm-metric { flex: 1 1 0; min-width: 92px; background: #0d141b;
+  border: 1px solid #212b36; border-radius: 10px; padding: 10px; text-align: center; }
+.fm-metric-v { font-size: 17px; font-weight: 700; color: #e6edf4;
   font-family: ui-monospace, monospace; }
-.fm-card-k { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-  color: #93a1b0; margin-top: 4px; }
-.fm-row { display: flex; align-items: center; gap: 10px; margin: 7px 0; }
-.fm-row-k { width: 160px; flex: 0 0 160px; color: #e6edf4; font-size: 13px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fm-bar { flex: 1; height: 14px; background: #0d141b; border: 1px solid #212b36;
-  border-radius: 7px; overflow: hidden; }
-.fm-bar-fill { display: block; height: 100%;
-  background: linear-gradient(92deg,#22c55e,#4ade80); }
-.fm-row-v { width: 110px; flex: 0 0 110px; text-align: right;
-  font-family: ui-monospace, monospace; color: #93a1b0; font-size: 12px; }
+.fm-metric-k { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: #93a1b0; margin-top: 3px; }
 footer, .footer, .show-api { display: none !important; }
 """
 
@@ -259,12 +255,46 @@ def _rca_html(image_path) -> str:
     return (rca_block, kg_block)
 
 
-def _bar_row(label, width_pct, display):
-    w = max(2.0, min(float(width_pct), 100.0))
-    return (f'<div class="fm-row"><span class="fm-row-k">{_esc(label)}</span>'
-            f'<span class="fm-bar"><span class="fm-bar-fill" '
-            f'style="width:{w:.0f}%"></span></span>'
-            f'<span class="fm-row-v">{_esc(display)}</span></div>')
+def _risk_html(result: dict) -> str:
+    """Projected failure risk if the part stays in service.
+    Heuristic: current risk = model confidence (defect probability), then
+    degrades over time. Capped so it never reads 100%."""
+    now = min(float(result.get("vit_confidence", 0.0)) * 100, 99.7)
+    day1 = min(now + 5, 99.7)
+    day3 = min(now + 15, 99.7)
+    week1 = min(now + 30, 99.7)
+    risk = week1
+
+    if risk < 40:
+        level, cls, icon, color = "LOW", "ok", "\U0001F7E2", "#22c55e"
+    elif risk < 70:
+        level, cls, icon, color = "MODERATE", "idle", "\U0001F7E1", "#eab308"
+    elif risk < 90:
+        level, cls, icon, color = "HIGH", "novel", "\U0001F7E0", "#ff6a33"
+    else:
+        level, cls, icon, color = "CRITICAL", "novel", "\U0001F534", "#ef4444"
+
+    # rough estimate of safe operating cycles before failure
+    safe_cycles = max(0, int((100 - risk) * 12))
+    metrics = [
+        ("Now", f"{now:.1f}%"),
+        ("24 Hours", f"{day1:.1f}%"),
+        ("72 Hours", f"{day3:.1f}%"),
+        ("1 Week", f"{week1:.1f}%"),
+        ("Safe Cycles", str(safe_cycles)),
+    ]
+    mhtml = "".join(
+        f'<div class="fm-metric"><div class="fm-metric-v">{v}</div>'
+        f'<div class="fm-metric-k">{k}</div></div>'
+        for k, v in metrics)
+    return (
+        f'<div class="fm-badge {cls}">{icon} {level} RISK &middot; {risk:.1f}%</div>'
+        f'<div class="fm-progress"><div class="fm-progress-bar" '
+        f'style="width:{min(risk, 100):.0f}%;background:{color}"></div></div>'
+        f'<div class="fm-metrics">{mhtml}</div>'
+        f'<div class="fm-empty">Projected failure risk if the part stays in '
+        f'service &mdash; heuristic estimate from current confidence.</div>'
+    )
 
 
 def _analytics_payload():
@@ -272,60 +302,45 @@ def _analytics_payload():
     cases = database.get_cases(conn)
     conn.close()
     if not cases:
-        return '<div class="fm-empty">No inspections recorded yet — run a few inspections first.</div>'
+        empty = '<div class="fm-empty">No inspections recorded yet — run a few inspections first.</div>'
+        return (None, empty, None, empty)
 
     h = health(cases)
-    n = h["n"]
+    calib = calibration_summary(cases)
+    dna_path = render_dna_figure(cases, _DNA_PATH)
+    cal_path = render_calibration_figure(cases, _CAL_PATH)
 
-    # defects by type (count + share of all defects)
-    defect_counts = Counter(c.get("defect_type") or "unknown" for c in cases)
-    total_def = sum(defect_counts.values()) or 1
-    defect_rows = "".join(
-        _bar_row(label, count / total_def * 100,
-                 f"{count} ({count / total_def * 100:.0f}%)")
-        for label, count in defect_counts.most_common())
+    tier_cls = ("ok" if h["tier"] == "Good"
+                else "novel" if h["tier"] == "Critical" else "idle")
+    mach = "".join(f'<tr><td>{_esc(k)}</td><td>{min(v, 99.7):.0f}%</td></tr>'
+                   for k, v in sorted(h["by_machine"].items()))
+    shift = "".join(f'<tr><td>{_esc(k)}</td><td>{min(v, 99.7):.0f}%</td></tr>'
+                    for k, v in sorted(h["by_shift"].items()))
+    health_html = (
+        f'<div class="fm-badge {tier_cls}">Factory health: {min(h["factory_pct"], 99.7):.0f}% '
+        f'&middot; {h["tier"]}</div>'
+        f'<div class="fm-empty" style="margin-top:8px">'
+        f'{h["n"]} inspections &middot; defect rate {h["defect_rate"]:.0f}% '
+        f'&middot; novel rate {h["novel_rate"]:.0f}%</div>'
+        f'<div class="fm-title" style="margin-top:12px">health by machine</div>'
+        f'<table class="fm-tbl"><tbody>{mach}</tbody></table>'
+        f'<div class="fm-title" style="margin-top:12px">health by shift</div>'
+        f'<table class="fm-tbl"><tbody>{shift}</tbody></table>'
+    )
 
-    # confident vs uncertain (plain-language version of model calibration)
-    uncertain = sum(1 for c in cases if c.get("is_novel"))
-    conf_rate = (1 - uncertain / n) * 100
+    crows = "".join(
+        f'<tr><td>{b["range"]}</td><td>{b["count"]}</td>'
+        f'<td class="sim">{b["novel_rate"] * 100:.0f}%</td></tr>'
+        for b in calib["bins"])
+    calib_html = (
+        f'<div class="fm-empty">mean conf {_pct(calib["mean_conf"])} &middot; '
+        f'overall novel rate {calib["novel_rate"] * 100:.0f}% '
+        f'(low-conf bins should be mostly novel)</div>'
+        f'<table class="fm-tbl"><thead><tr><th>conf bin</th><th>cases</th>'
+        f'<th>% novel</th></tr></thead><tbody>{crows}</tbody></table>'
+    )
 
-    tier_color = {"Good": "#22c55e", "Watch": "#eab308",
-                  "Critical": "#ef4444"}.get(h["tier"], "#e6edf4")
-    tier_meaning = {
-        "Good": "the line is running clean — most parts pass and defects are rare.",
-        "Watch": "defect rate is elevated — keep an eye on the worst machines/shifts.",
-        "Critical": "defect rate is high — investigate the worst machines/shifts now.",
-    }.get(h["tier"], "")
-
-    mach_rows = "".join(
-        _bar_row(k, v, f"{min(v, 99.7):.0f}%")
-        for k, v in sorted(h["by_machine"].items(), key=lambda x: -x[1]))
-    shift_rows = "".join(
-        _bar_row(k, v, f"{min(v, 99.7):.0f}%")
-        for k, v in sorted(h["by_shift"].items(), key=lambda x: -x[1]))
-
-    return f'''
-    <div class="fm-report">
-      <div class="fm-headline" style="color:{tier_color}">Factory health {min(h["factory_pct"], 99.7):.0f}%</div>
-      <div class="fm-empty"><b>{h["tier"]}</b> &mdash; {tier_meaning}</div>
-
-      <div class="fm-cards">
-        <div class="fm-card2"><div class="fm-card-v">{n}</div><div class="fm-card-k">parts inspected</div></div>
-        <div class="fm-card2"><div class="fm-card-v">{min(h["defect_rate"], 99.7):.0f}%</div><div class="fm-card-k">defect rate</div></div>
-        <div class="fm-card2"><div class="fm-card-v">{min(h["novel_rate"], 99.7):.0f}%</div><div class="fm-card-k">uncertain / novel</div></div>
-        <div class="fm-card2"><div class="fm-card-v">{min(conf_rate, 99.7):.0f}%</div><div class="fm-card-k">AI confident</div></div>
-      </div>
-
-      <div class="fm-title">defects by type</div>
-      {defect_rows or '<div class="fm-empty">No defects recorded yet.</div>'}
-
-      <div class="fm-title" style="margin-top:16px">health by machine</div>
-      {mach_rows or '<div class="fm-empty">No data.</div>'}
-
-      <div class="fm-title" style="margin-top:16px">health by shift</div>
-      {shift_rows or '<div class="fm-empty">No data.</div>'}
-    </div>
-    '''
+    return (dna_path, health_html, cal_path, calib_html)
 
 
 def analyze(image_path):
@@ -333,7 +348,7 @@ def analyze(image_path):
     idle_sev = '<div class="fm-badge idle">&mdash;</div>'
     empty = '<div class="fm-empty">Awaiting inspection&hellip;</div>'
     if not image_path:
-        return (None, idle, idle_sev, empty, empty, empty)
+        return (None, idle, idle_sev, empty, empty, empty, empty)
 
     result = infer_one(image_path)
     overlay_bgr = result["heatmap_overlay"]
@@ -345,7 +360,8 @@ def analyze(image_path):
         _last_case_id[image_path] = case_id
 
     return (overlay_rgb, _badge(result), _severity_badge(result),
-            _similar_html(result), _meta_html(result), _kg_html(result))
+            _risk_html(result), _similar_html(result),
+            _meta_html(result), _kg_html(result))
 
 
 def teach(image_path, label):
@@ -419,20 +435,21 @@ def _batch_inspect(folder, files):
 def _inspect(img, files, folder):
     idle_badge = '<div class="fm-badge idle">Awaiting a single part&hellip;</div>'
     idle_sev = '<div class="fm-badge idle">&mdash;</div>'
+    idle_risk = '<div class="fm-badge idle">&mdash;</div>'
     empty = '<div class="fm-empty">Awaiting inspection&hellip;</div>'
     # batch mode when a folder or multiple files are provided
     if folder or _file_paths(files):
         table, gallery = _batch_inspect(folder, files)
-        return (None, idle_badge, idle_sev, table, gallery,
+        return (None, idle_badge, idle_sev, idle_risk, table, gallery,
                 empty, empty, empty)
     # single mode
     if img:
-        overlay_rgb, badge, severity, sim, meta, kg = analyze(img)
+        overlay_rgb, badge, severity, risk, sim, meta, kg = analyze(img)
         batch_idle = ('<div class="fm-empty">Single-part mode &mdash; add a folder '
                       'or multiple images in Section 01 for batch.</div>')
-        return (overlay_rgb, badge, severity, batch_idle, None,
+        return (overlay_rgb, badge, severity, risk, batch_idle, None,
                 sim, meta, kg)
-    return (None, idle_badge, idle_sev, empty, None,
+    return (None, idle_badge, idle_sev, idle_risk, empty, None,
             empty, empty, empty)
 
 
@@ -497,21 +514,36 @@ def build():
             with gr.Column(elem_classes="fm-card"):
                 learn_html = gr.HTML('<div class="fm-empty">Awaiting feedback.</div>')
 
-        # ---- 08: FACTORY REPORT (ANALYTICS) ----
-        gr.HTML('<div class="fm-sec">08 &mdash; Factory report (from inspection history)</div>')
+        # ---- 08: FUTURE FAILURE RISK ----
+        gr.HTML('<div class="fm-sec">08 &mdash; Future failure risk</div>')
+        risk_html = gr.HTML('<div class="fm-badge idle">&mdash;</div>')
+
+        # ---- 09: ANALYTICS ----
+        gr.HTML('<div class="fm-sec">09 &mdash; Analytics (from inspection history)</div>')
         with gr.Row():
-            refresh_btn = gr.Button("Refresh report", variant="primary")
-        analytics_html = gr.HTML('<div class="fm-empty">Awaiting data — run inspections, then refresh.</div>')
+            refresh_btn = gr.Button("Refresh analytics", variant="primary")
+        with gr.Row():
+            with gr.Column(scale=5, elem_classes="fm-card"):
+                dna_img = gr.Image(label="Defect-DNA (PCA)", height=300)
+            with gr.Column(scale=5, elem_classes="fm-card"):
+                health_html = gr.HTML('<div class="fm-empty">Awaiting data.</div>')
+        with gr.Row():
+            with gr.Column(scale=6, elem_classes="fm-card"):
+                cal_img = gr.Image(label="Confidence calibration", height=260)
+            with gr.Column(scale=4, elem_classes="fm-card"):
+                calib_html = gr.HTML('<div class="fm-empty">Awaiting data.</div>')
 
         inspect_btn.click(
             _inspect,
             inputs=[img, files_in, folder_in],
-            outputs=[overlay, badge, severity_html,
+            outputs=[overlay, badge, severity_html, risk_html,
                      batch_table, batch_gallery,
                      similar_html, meta_html, kg_html])
         teach_btn.click(teach, inputs=[img, label_in], outputs=learn_html)
         rca_btn.click(_rca_html, inputs=img, outputs=[rca_html, kg_html])
-        refresh_btn.click(_analytics_payload, inputs=None, outputs=analytics_html)
+        refresh_btn.click(_analytics_payload,
+                          inputs=None,
+                          outputs=[dna_img, health_html, cal_img, calib_html])
 
     return demo
 
