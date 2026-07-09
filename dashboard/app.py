@@ -348,36 +348,74 @@ def _batch_inspect(folder, files):
     return (table, gallery)
 
 
+def _inspect(img, files, folder):
+    idle_badge = '<div class="fm-badge idle">Awaiting a single part&hellip;</div>'
+    empty = '<div class="fm-empty">Awaiting inspection&hellip;</div>'
+    # batch mode when a folder or multiple files are provided
+    if folder or _file_paths(files):
+        table, gallery = _batch_inspect(folder, files)
+        return (None, idle_badge, table, gallery, empty, empty, empty)
+    # single mode
+    if img:
+        overlay_rgb, badge, sim, meta, kg = analyze(img)
+        batch_idle = ('<div class="fm-empty">Single-part mode &mdash; add a folder '
+                      'or multiple images in Section 01 for batch.</div>')
+        return (overlay_rgb, badge, batch_idle, None, sim, meta, kg)
+    return (None, idle_badge, empty, None, empty, empty, empty)
+
+
 def build():
     import gradio as gr
 
     with gr.Blocks(title="ForgeMind") as demo:
         gr.HTML(_HERO)
 
-        gr.HTML('<div class="fm-sec">01 &mdash; Inspect a part</div>')
+        # ---- 01: ADD PART(S) — single image, multiple images, or a folder ----
+        gr.HTML('<div class="fm-sec">01 &mdash; Add part(s)</div>')
         with gr.Row():
             with gr.Column(scale=5, elem_classes="fm-card"):
-                img = gr.Image(label="Part image", type="filepath", height=280)
-                run_btn = gr.Button("Inspect", variant="primary")
+                img = gr.Image(label="Part image (single)", type="filepath",
+                               height=260)
+                inspect_btn = gr.Button("Inspect", variant="primary")
+            with gr.Column(scale=7, elem_classes="fm-card"):
+                files_in = gr.File(
+                    label="Or add multiple images",
+                    file_count="multiple", file_types=["image"])
+                folder_in = gr.Textbox(
+                    label="Or a folder path of parts",
+                    placeholder="/abs/path/to/folder (e.g. datasets/mvtec/bottle/test/broken_large)",
+                    lines=1)
+        with gr.Row():
             with gr.Column(scale=7, elem_classes="fm-card"):
                 overlay = gr.Image(label="Anomaly heatmap overlay", height=280)
+            with gr.Column(scale=5, elem_classes="fm-card"):
                 badge = gr.HTML('<div class="fm-badge idle">Awaiting a part&hellip;</div>')
 
-        gr.HTML('<div class="fm-sec">02 &mdash; Similar past cases</div>')
+        # ---- 02: BATCH RESULTS ----
+        gr.HTML('<div class="fm-sec">02 &mdash; Batch results</div>')
+        batch_table = gr.HTML('<div class="fm-empty">Add a folder or multiple images in Section 01, then Inspect.</div>')
+        batch_gallery = gr.Gallery(label="Heatmap overlays (up to 24)", height=280)
+
+        # ---- 03: SIMILAR PAST CASES ----
+        gr.HTML('<div class="fm-sec">03 &mdash; Similar past cases</div>')
         similar_html = gr.HTML('<div class="fm-empty">Awaiting inspection&hellip;</div>')
 
-        gr.HTML('<div class="fm-sec">03 &mdash; Factory metadata</div>')
+        # ---- 04: FACTORY METADATA ----
+        gr.HTML('<div class="fm-sec">04 &mdash; Factory metadata</div>')
         meta_html = gr.HTML('<div class="fm-empty">Awaiting inspection&hellip;</div>')
 
-        gr.HTML('<div class="fm-sec">04 &mdash; Knowledge graph &amp; memory</div>')
+        # ---- 05: KNOWLEDGE GRAPH & MEMORY ----
+        gr.HTML('<div class="fm-sec">05 &mdash; Knowledge graph &amp; memory</div>')
         kg_html = gr.HTML('<div class="fm-empty">Awaiting inspection&hellip;</div>')
 
-        gr.HTML('<div class="fm-sec">05 &mdash; AI root-cause analysis</div>')
+        # ---- 06: AI ROOT-CAUSE ANALYSIS ----
+        gr.HTML('<div class="fm-sec">06 &mdash; AI root-cause analysis</div>')
         with gr.Row():
             rca_btn = gr.Button("Explain root cause (multi-agent)", variant="primary")
         rca_html = gr.HTML('<div class="fm-empty">Run an inspection, then ask ForgeMind to explain why.</div>')
 
-        gr.HTML('<div class="fm-sec">06 &mdash; Teach &amp; learn</div>')
+        # ---- 07: TEACH & LEARN ----
+        gr.HTML('<div class="fm-sec">07 &mdash; Teach &amp; learn</div>')
         with gr.Row():
             with gr.Column(elem_classes="fm-card"):
                 label_in = gr.Textbox(label="Correct defect label",
@@ -386,7 +424,8 @@ def build():
             with gr.Column(elem_classes="fm-card"):
                 learn_html = gr.HTML('<div class="fm-empty">Awaiting feedback.</div>')
 
-        gr.HTML('<div class="fm-sec">07 &mdash; Analytics (from inspection history)</div>')
+        # ---- 08: ANALYTICS ----
+        gr.HTML('<div class="fm-sec">08 &mdash; Analytics (from inspection history)</div>')
         with gr.Row():
             refresh_btn = gr.Button("Refresh analytics", variant="primary")
         with gr.Row():
@@ -400,32 +439,16 @@ def build():
             with gr.Column(scale=4, elem_classes="fm-card"):
                 calib_html = gr.HTML('<div class="fm-empty">Awaiting data.</div>')
 
-        outputs = [overlay, badge, similar_html, meta_html, kg_html]
-        run_btn.click(analyze, inputs=img, outputs=outputs)
-        img.upload(analyze, inputs=img, outputs=outputs)
+        inspect_btn.click(
+            _inspect,
+            inputs=[img, files_in, folder_in],
+            outputs=[overlay, badge, batch_table, batch_gallery,
+                     similar_html, meta_html, kg_html])
         teach_btn.click(teach, inputs=[img, label_in], outputs=learn_html)
         rca_btn.click(_rca_html, inputs=img, outputs=[rca_html, kg_html])
         refresh_btn.click(_analytics_payload,
                           inputs=None,
                           outputs=[dna_img, health_html, cal_img, calib_html])
-
-        gr.HTML('<div class="fm-sec">08 &mdash; Batch inspect (folder or images)</div>')
-        with gr.Row():
-            with gr.Column(scale=6, elem_classes="fm-card"):
-                folder_in = gr.Textbox(
-                    label="Folder path of parts",
-                    placeholder="/abs/path/to/folder (e.g. datasets/mvtec/bottle/test/broken_large)",
-                    lines=1)
-            with gr.Column(scale=6, elem_classes="fm-card"):
-                files_in = gr.File(
-                    label="Or add images (select multiple)",
-                    file_count="multiple", file_types=["image"])
-        batch_btn = gr.Button("Inspect", variant="primary")
-        batch_table = gr.HTML('<div class="fm-empty">Enter a folder path or add images, then inspect.</div>')
-        batch_gallery = gr.Gallery(label="Heatmap overlays (up to 24)", height=300)
-
-        batch_btn.click(_batch_inspect, inputs=[folder_in, files_in],
-                        outputs=[batch_table, batch_gallery])
 
     return demo
 

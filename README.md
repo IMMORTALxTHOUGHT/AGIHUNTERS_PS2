@@ -62,12 +62,14 @@ python3 -m dashboard.app
 
 ## Using the dashboard
 
-1. **Inspect a part** — upload an image → heatmap, class badge, similar cases, factory metadata.
-2. **Knowledge graph & memory** — associated conditions + recommended fix, accumulated across all inspections.
-3. **AI root-cause analysis** — *Explain root cause* launches the 3-agent debate → winning cause, rationale, and actions (saved to the case).
-4. **Teach & learn** — type the correct label to record a human-verified example into FAISS.
-5. **Analytics** — *Refresh analytics* shows Defect-DNA scatter, factory-health tier, and confidence calibration.
-6. **Batch inspect** — enter a folder path *or* select multiple images to process them all at once, auto-logging each one.
+1. **Add part(s)** (top, Section 01) — upload a **single image**, **multiple images**, *or* a **folder path**, then hit *Inspect*. Single → heatmap + class badge; multiple/folder → batch table + gallery.
+2. **Batch results** (Section 02) — summary table + heatmap gallery for multi/folder inputs.
+3. **Similar past cases** — case #, defect, similarity, and recommended fix.
+4. **Factory metadata** — simulated line/shift/machine/condition for the inspected part.
+5. **Knowledge graph & memory** — associated conditions + recommended fix, accumulated across all inspections.
+6. **AI root-cause analysis** — *Explain root cause* launches the 3-agent debate → winning cause, rationale, and actions (saved to the case).
+7. **Teach & learn** — type the correct label to record a human-verified example into FAISS.
+8. **Analytics** — *Refresh analytics* shows Defect-DNA scatter, factory-health tier, and confidence calibration.
 
 ## Project layout
 
