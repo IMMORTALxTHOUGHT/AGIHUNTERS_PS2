@@ -32,6 +32,7 @@ storage/forge_mind.db
 
 # Generated outputs / logs
 outputs/
+reports/
 *.log
 runs/
 

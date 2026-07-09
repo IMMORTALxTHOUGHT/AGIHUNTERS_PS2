@@ -15,7 +15,7 @@ from collections import Counter
 import cv2
 import numpy as np
 
-from config import DASHBOARD_PORT, OUTPUTS_DIR
+from config import DASHBOARD_PORT, OUTPUTS_DIR, REPORTS_DIR
 from pipeline.inference import infer_one
 from storage import database
 from storage.memory import Memory
@@ -24,6 +24,10 @@ from agents.moderator import moderate
 from analytics.dna_pca import render_dna_figure
 from analytics.health import health
 from analytics.calibration import render_calibration_figure
+try:
+    from report import build_pdf
+except ImportError:  # when run as `python3 -m dashboard.app`
+    from dashboard.report import build_pdf
 
 _memory = Memory()
 _last_case_id: dict = {}
@@ -439,6 +443,26 @@ def _batch_inspect(folder, files):
     return (table, gallery)
 
 
+def _download_pdf(image_path):
+    if not image_path:
+        return None
+    try:
+        result = infer_one(image_path)
+        defect = result.get("defect", "unknown")
+        know = _memory.get_knowledge(defect)
+        votes = run_debate(defect, result.get("metadata", {}),
+                           result.get("similar_cases", []), know)
+        verdict = moderate(votes, defect=defect,
+                           metadata=result.get("metadata", {}), kg_info=know)
+        case_id = _last_case_id.get(image_path)
+        _memory.record_rca(case_id, defect, verdict)
+        verdict["votes"] = votes
+        return build_pdf(image_path, result, verdict, str(REPORTS_DIR))
+    except Exception as e:  # keep the dashboard alive even if PDF fails
+        print("PDF report failed:", e)
+        return None
+
+
 def _inspect(img, files, folder):
     idle_badge = '<div class="fm-badge idle">Awaiting a single part&hellip;</div>'
     idle_sev = '<div class="fm-badge idle">&mdash;</div>'
@@ -506,6 +530,9 @@ def build():
         with gr.Row():
             rca_btn = gr.Button("Explain root cause (multi-agent)", variant="primary")
         rca_html = gr.HTML('<div class="fm-empty">Run an inspection, then ask ForgeMind to explain why.</div>')
+        with gr.Row():
+            pdf_btn = gr.Button("Download full report (PDF)", variant="secondary")
+            pdf_out = gr.File(label="Report (PDF)", file_types=[".pdf"])
 
         # ---- 07: TEACH & LEARN ----
         gr.HTML('<div class="fm-sec">07 &mdash; Teach &amp; learn</div>')
@@ -547,6 +574,7 @@ def build():
                      similar_html, meta_html, kg_html])
         teach_btn.click(teach, inputs=[img, label_in], outputs=learn_html)
         rca_btn.click(_rca_html, inputs=img, outputs=[rca_html, kg_html])
+        pdf_btn.click(_download_pdf, inputs=[img], outputs=[pdf_out])
         refresh_btn.click(_analytics_payload,
                           inputs=None,
                           outputs=[report_html, dna_img, cal_img])
