@@ -3,7 +3,8 @@
 Dashboard and CLI both call infer_one().
 """
 from config import (
-    VIT_CONF_THRESHOLD,
+    OOD_CONF_THRESHOLD,
+    NOVELTY_CONF_THRESHOLD,
     FAISS_TOP_K,
     MODEL_WEIGHTS,
 )
@@ -50,20 +51,41 @@ def infer_one(image_path: str) -> dict:
     cls = _model.predict(img_pil, _label_map)
     vec = _emb.encode(img_pil)
 
-    is_novel = cls["confidence"] < VIT_CONF_THRESHOLD
     # search one extra so we can drop the queried image itself (it always
     # scores 1.000 as its own nearest neighbour) without losing 5 real cases
     raw = _store.search(vec, k=FAISS_TOP_K + 1) if _store else []
     similar = [s for s in raw if s.get("path") != image_path][:FAISS_TOP_K]
+
+    # ---- closed-set verdict with out-of-distribution rejection ----
+    # The ViT softmax max is a RELATIVE score: it always picks the least-wrong
+    # known class even for an unrelated image (a monkey, a random Google screw).
+    # We therefore grade it in three bands instead of trusting the label.
+    conf = float(cls["confidence"])
+    if conf < OOD_CONF_THRESHOLD:
+        # Not close to anything we were trained on -> do NOT fabricate a class.
+        defect = "unknown_part"
+        is_ood = True
+        is_novel = True
+    elif conf < NOVELTY_CONF_THRESHOLD:
+        # Real-looking part but an unrecognized variant -> novelty, needs review.
+        defect = cls["label"]
+        is_ood = False
+        is_novel = True
+    else:
+        defect = cls["label"]
+        is_ood = False
+        is_novel = False
 
     return {
         "anomaly_score": result["anomaly_score"],
         "heatmap": result["heatmap"],
         "heatmap_overlay": result["heatmap_overlay"],
         "roi": result["roi"],
-        "defect": cls["label"],
-        "vit_confidence": cls["confidence"],
+        "defect": defect,
+        "vit_confidence": conf,
         "is_novel_defect": is_novel,
+        "is_ood": is_ood,
+        "vit_label": cls["label"],
         "embedding": vec,
         "similar_cases": similar,
         "metadata": meta,

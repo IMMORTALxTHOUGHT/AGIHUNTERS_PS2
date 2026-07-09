@@ -35,6 +35,8 @@ _USABLE = _W - 2 * _LEFT
 
 
 def _sev_text(result: dict) -> str:
+    if result.get("is_ood"):
+        return "Out of distribution (unrecognized part)"
     if result.get("is_novel_defect"):
         return "Needs review (novel / low-confidence)"
     score = float(result.get("anomaly_score", 0.0) or 0.0)
@@ -217,9 +219,15 @@ def build_pdf(image_path: str, result: dict, rca: dict | None,
     # 1. classification
     rep.heading("1 . Classification")
     rep.images(items)
-    rep.line(f"Defect type        : {result.get('defect', '?')}", bold=True)
-    rep.line(f"Confidence         : "
-             f"{min(float(result.get('vit_confidence', 0) or 0) * 100, 99.7):.1f}%")
+    if result.get("is_ood"):
+        rep.line("Defect type        : UNRECOGNIZED — out of distribution",
+                 bold=True)
+        rep.line(f"Nearest-match conf : "
+                 f"{min(float(result.get('vit_confidence', 0) or 0) * 100, 99.7):.1f}%")
+    else:
+        rep.line(f"Defect type        : {result.get('defect', '?')}", bold=True)
+        rep.line(f"Confidence         : "
+                 f"{min(float(result.get('vit_confidence', 0) or 0) * 100, 99.7):.1f}%")
     rep.line(f"Severity           : {_sev_text(result)}")
     rep.line(f"Anomaly score      : {float(result.get('anomaly_score', 0) or 0):.3f}")
     rep.line(f"Novel / unseen     : {'Yes' if result.get('is_novel_defect') else 'No'}")

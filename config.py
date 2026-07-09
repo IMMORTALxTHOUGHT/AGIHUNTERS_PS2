@@ -21,7 +21,15 @@ OUTPUTS_DIR = ROOT / "outputs"
 
 # --- Model params ---
 VIT_INPUT_SIZE = 224
-VIT_CONF_THRESHOLD = 0.7
+# Confidence (ViT softmax max-prob) is a RELATIVE score over the closed set of
+# known defect classes — it is NOT "this is part X with p% certainty". We use it
+# to reject out-of-distribution inputs instead of fabricating a class:
+#   < OOD_CONF_THRESHOLD      -> unrecognized part (out of distribution)
+#   OOD .. NOVELTY threshold  -> novelty: real part, unrecognized variant
+#   >= NOVELTY_CONF_THRESHOLD -> confident known classification
+VIT_CONF_THRESHOLD = 0.7          # legacy single-band "novel" cutoff (kept for compat)
+OOD_CONF_THRESHOLD = 0.85
+NOVELTY_CONF_THRESHOLD = 0.97
 VIT_EMBED_DIM = 768
 VIT_PROJ_DIM = 256
 PATCHCORE_BACKBONE = "wide_resnet50_2"

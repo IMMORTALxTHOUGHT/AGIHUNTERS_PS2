@@ -173,9 +173,14 @@ def _file_paths(files):
 
 
 def _badge(result: dict) -> str:
+    if result.get("is_ood"):
+        return ('<div class="fm-badge ood">&#9888; UNRECOGNIZED PART &mdash; '
+                'out of distribution '
+                f'<span style="font-weight:400;color:#93a1b0"> &middot; nearest match '
+                f'{_pct(result["vit_confidence"])}</span></div>')
     if result["is_novel_defect"]:
-        return ('<div class="fm-badge novel">NOVEL DEFECT &mdash; low confidence, '
-                'review needed</div>')
+        return ('<div class="fm-badge novel">NOVEL DEFECT &mdash; unrecognized '
+                'variant, review needed</div>')
     return (f'<div class="fm-badge ok">&#10004; {_esc(result["defect"])} '
             f'<span style="font-weight:400;color:#93a1b0"> &middot; conf '
             f'{_pct(result["vit_confidence"])}</span></div>')
@@ -185,6 +190,8 @@ def _severity(result: dict) -> str:
     """High / mid / low severity from the anomaly signal + confidence.
     Thresholds are on the raw PatchCore L2 anomaly score and can be tuned
     to your dataset's scale."""
+    if result.get("is_ood"):
+        return "ood"
     if result.get("is_novel_defect"):
         return "review"
     score = float(result.get("anomaly_score", 0.0))
@@ -202,6 +209,7 @@ def _severity_badge(result: dict) -> str:
         "mid":    ("idle",  "Mid severity &mdash; moderate anomaly"),
         "low":    ("ok",    "Low severity &mdash; weak anomaly"),
         "review": ("novel", "Needs review &mdash; novel / low-confidence"),
+        "ood":    ("ood",   "Out of distribution &mdash; unrecognized part"),
     }[_severity(result)]
     return f'<div class="fm-badge {spec[0]}">{spec[1]}</div>'
 
@@ -227,7 +235,12 @@ def _similar_html(result: dict) -> str:
             f'<td class="sim">{sim:.3f}</td>'
             f'<td>{_esc(fix)}</td></tr>'
         )
-    return (f'<div class="fm-simnote">Top visual neighbours from the FAISS memory '
+    ood_note = ('<div class="fm-simnote" style="color:#ff6b6b">Input is '
+                '<b>out of distribution</b> &mdash; these are only the nearest '
+                'known parts, not a real match. Treat the verdict as '
+                '&ldquo;unrecognized&rdquo;.</div>') if result.get("is_ood") else ''
+    return (f'{ood_note}'
+            f'<div class="fm-simnote">Top visual neighbours from the FAISS memory '
             f'(cosine similarity, self-match excluded).</div>'
             f'<table class="fm-tbl"><thead><tr>'
             f'<th></th><th>#</th><th>defect</th>'
@@ -283,6 +296,10 @@ def _meta_interpret(defect: str, meta: dict) -> str:
 def _meta_html(result: dict) -> str:
     meta = result.get("metadata", {})
     defect = result.get("defect", "unknown")
+    if result.get("is_ood"):
+        return ('<div class="fm-simnote" style="color:#ff6b6b">This part is '
+                'unrecognized (out of distribution) &mdash; its metadata is not '
+                'cross-referenced against the knowledge graph.</div>')
     if not meta:
         return '<div class="fm-empty">No metadata.</div>'
     trs = "".join(
@@ -297,6 +314,9 @@ def _meta_html(result: dict) -> str:
 
 def _kg_html(result: dict) -> str:
     defect = result.get("defect", "unknown")
+    if result.get("is_ood"):
+        return ('<div class="fm-empty">No knowledge graph for an unrecognized '
+                'part &mdash; out of distribution.</div>')
     know = _memory.get_knowledge(defect)
     summ = know["summary"]
     causes = know["causes"]
@@ -341,6 +361,11 @@ def _rca_html(image_path) -> str:
     if not image_path:
         return '<div class="fm-empty">Run an inspection first.</div>'
     result = infer_one(image_path)
+    if result.get("is_ood"):
+        # Don't burn a full multi-agent debate on a non-part; say it plainly.
+        return ('<div class="fm-badge ood">&#9888; Root-cause analysis skipped &mdash; '
+                'the input is out of distribution, not a known defect.</div>',
+                _kg_html(result))
     defect = result.get("defect", "unknown")
     kg_info = _memory.get_knowledge(defect)
     votes = run_debate(defect, result.get("metadata", {}),

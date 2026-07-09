@@ -157,14 +157,16 @@ def run_batch(folder: str, images: list) -> dict:
         engine._memory.record_inspection(result, p)  # grow memory + KG
         defect = result.get("defect", "unknown")
         sev = {"high": "High", "mid": "Mid", "low": "Low",
-               "review": "Review"}[engine._severity(result)]
+               "review": "Review", "ood": "Out-of-dist"}[engine._severity(result)]
+        novel = ("OOD" if result.get("is_ood")
+                 else "YES" if result.get("is_novel_defect") else "no")
         rows.append({
             "file": os.path.basename(p),
             "defect": defect,
             "conf": engine._pct(result.get("vit_confidence", 0.0)),
             "severity": sev,
             "anomaly": f'{result.get("anomaly_score", 0.0):.2f}',
-            "novel": "YES" if result.get("is_novel_defect") else "no",
+            "novel": novel,
         })
         if len(gallery) < 24 and result.get("heatmap_overlay") is not None:
             gallery.append(_b64_png(result["heatmap_overlay"]))
