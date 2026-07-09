@@ -9,6 +9,10 @@ defects-by-type, by machine/shift, Defect-DNA, calibration).
 Uses matplotlib's PdfPages only, so it adds NO new dependency (matplotlib is
 already required by the analytics figures). If matplotlib is unavailable the
 builder returns None and the dashboard button simply does nothing.
+
+Layout note: all text flows on a shared vertical cursor and tables are drawn
+as monospaced, column-aligned text lines (not matplotlib axes tables) so
+nothing can overlap.
 """
 from __future__ import annotations
 
@@ -26,6 +30,8 @@ from analytics.calibration import render_calibration_figure
 
 _W = 8.27   # A4 width  (inches)
 _H = 11.69  # A4 height (inches)
+_LEFT = 0.6
+_USABLE = _W - 2 * _LEFT
 
 
 def _sev_text(result: dict) -> str:
@@ -38,6 +44,22 @@ def _sev_text(result: dict) -> str:
     if score >= 0.4 or conf < 0.80:
         return "Mid"
     return "Low"
+
+
+def _wrap(text: str, width: int):
+    words = str(text).split()
+    lines, cur = [], ""
+    for w in words:
+        if not cur:
+            cur = w
+        elif len(cur) + 1 + len(w) <= width:
+            cur += " " + w
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or [""]
 
 
 class _Report:
@@ -58,8 +80,8 @@ class _Report:
     def _fx(self, ix: float) -> float:
         return ix / _W
 
-    def _fy(self, iy: float) -> float:  # iy measured down from the top
-        return iy / _H
+    def _fy(self, iy_from_top: float) -> float:
+        return iy_from_top / _H
 
     def _new_page(self):
         if self.fig is not None:
@@ -70,46 +92,55 @@ class _Report:
         self.y = _H - 0.7
 
     def _ensure(self, need: float):
-        if self.y - need < 0.6:
+        if self.y - need < 0.55:
             self._new_page()
 
+    def _dy(self, size: float) -> float:
+        return max(0.17, size / 72.0 * 1.4)
+
     def title_block(self, text, sub=None):
-        self.fig.text(self._fx(0.6), self._fy(self.y), text, fontsize=20,
+        self.fig.text(self._fx(_LEFT), self._fy(self.y), text, fontsize=20,
                       fontweight="bold", color="#0b3d1e", va="top")
-        self.y -= 0.38
+        self.y -= self._dy(20)
         if sub:
-            self.fig.text(self._fx(0.6), self._fy(self.y), sub, fontsize=10,
-                          color="#6b7280", va="top")
-            self.y -= 0.28
-        self.y -= 0.05
+            for ln in _wrap(sub, 95):
+                self.fig.text(self._fx(_LEFT), self._fy(self.y), ln,
+                              fontsize=10, color="#6b7280", va="top")
+                self.y -= self._dy(10)
+        self.y -= 0.06
 
-    def heading(self, text, size=14):
+    def heading(self, text, size=13):
         self._ensure(0.5)
-        self.fig.text(self._fx(0.6), self._fy(self.y), text, fontsize=size,
+        self.fig.text(self._fx(_LEFT), self._fy(self.y), text, fontsize=size,
                       fontweight="bold", color="#0b3d1e", va="top")
-        self.y -= 0.40
+        self.y -= self._dy(size) + 0.10
 
-    def line(self, text, size=10, color="#111827", bold=False):
-        self._ensure(0.22)
-        self.fig.text(self._fx(0.6), self._fy(self.y), text, fontsize=size,
-                      color=color, fontweight="bold" if bold else "normal",
-                      va="top")
-        self.y -= 0.20
+    def line(self, text, size=10, color="#111827", bold=False, mono=False):
+        width = int(_USABLE / (size / 72.0 * 0.60)) if not mono else 100
+        width = min(width, 104)
+        dy = self._dy(size)
+        for ln in _wrap(text, width):
+            self._ensure(dy)
+            self.fig.text(self._fx(_LEFT), self._fy(self.y), ln, fontsize=size,
+                          color=color, fontweight="bold" if bold else "normal",
+                          family="monospace" if mono else "DejaVu Sans",
+                          va="top")
+            self.y -= dy
 
-    def gap(self, dy=0.14):
+    def gap(self, dy=0.12):
         self.y -= dy
 
-    def images(self, items, max_w=3.6, max_h=3.6):
+    def images(self, items, max_w=3.4, max_h=3.2):
         if not items:
             return
         n = len(items)
-        cell_w = (_W - 1.2) / n
+        cell_w = (_W - 2 * _LEFT) / n
         w = min(max_w, cell_w - 0.2)
-        h = min(max_h, 3.6)
+        h = min(max_h, 3.4)
         for i, (p, title) in enumerate(items):
-            left = 0.6 + i * cell_w
+            left = _LEFT + i * cell_w
             bottom = self.y - h
-            ax = self.fig.add_axes([self._fx(left), self._fy(bottom) - 0,
+            ax = self.fig.add_axes([self._fx(left), self._fy(bottom),
                                     self._fx(w), self._fy(h)])
             try:
                 img = self.plt.imread(p) if isinstance(p, str) else p
@@ -121,36 +152,25 @@ class _Report:
             ax.set_title(title, fontsize=8)
             for s in ax.spines.values():
                 s.set_visible(False)
-        self.y -= (h + 0.35)
+        self.y -= (h + 0.30)
 
     def table(self, headers, rows):
         if not rows:
             self.line("(no data yet)", color="#6b7280")
             return
-        ncol = len(headers)
-        cell_h = 0.22
-        total_h = cell_h * (len(rows) + 1)
-        self._ensure(total_h + 0.12)
-        x0 = 0.6
-        width = _W - 1.2
-        bottom = self.y - total_h
-        ax = self.fig.add_axes([self._fx(x0), self._fy(bottom),
-                                self._fx(width), self._fy(total_h)])
-        tbl = ax.table(cellText=rows, colLabels=headers, loc="upper left",
-                       cellLoc="left")
-        tbl.auto_set_font_size(False)
-        tbl.set_fontsize(8)
-        tbl.scale(1, 1.7)
-        for (r, c), cell in tbl.get_celld().items():
-            cell.set_edgecolor("#d1d5db")
-            cell.set_linewidth(0.4)
-            if r == 0:
-                cell.set_facecolor("#0b3d1e")
-                cell.set_text_props(color="white", fontweight="bold")
-            elif r % 2 == 0:
-                cell.set_facecolor("#f3f4f6")
-        ax.axis("off")
-        self.y -= (total_h + 0.18)
+        cols = list(zip(*([headers] + rows)))
+        widths = [max(len(str(c)) for c in col) for col in cols]
+        widths = [min(x, 22) for x in widths]
+        total = sum(widths) + 2 * len(widths)
+
+        def fmt(row):
+            return "  ".join(str(c)[:22].ljust(widths[i])
+                            for i, c in enumerate(row))
+
+        self.line(fmt(headers), size=8.5, mono=True, bold=True, color="#0b3d1e")
+        self.line("-" * min(total, 100), size=8.5, mono=True, color="#9ca3af")
+        for r in rows:
+            self.line(fmt(r), size=8.5, mono=True)
 
     def close(self):
         self.pdf.savefig(self.fig)
@@ -174,7 +194,6 @@ def build_pdf(image_path: str, result: dict, rca: dict | None,
     kg = KnowledgeGraph()
     fix_for = lambda lab: kg.get_fix(lab or "")
 
-    # --- prepare image assets in a temp dir ---
     items = [(image_path, "Part image")]
     overlay = result.get("heatmap_overlay")
     if overlay is not None and cv2 is not None:
@@ -191,72 +210,73 @@ def build_pdf(image_path: str, result: dict, rca: dict | None,
 
     rep = _Report(out_path)
     rep.title_block(
-        "ForgeMind \u2014 Defect Inspection Report",
+        "ForgeMind - Defect Inspection Report",
         f"Part: {os.path.basename(image_path)}    Generated: "
         f"{datetime.now():%Y-%m-%d %H:%M:%S}")
 
     # 1. classification
-    rep.heading("1 \u00b7 Classification")
+    rep.heading("1 . Classification")
     rep.images(items)
-    rep.line(f"Defect type : {result.get('defect', '?')}", bold=True)
-    rep.line(f"Confidence  : {min(float(result.get('vit_confidence', 0) or 0) * 100, 99.7):.1f}%")
-    rep.line(f"Severity    : {_sev_text(result)}")
-    rep.line(f"Anomaly score: {float(result.get('anomaly_score', 0) or 0):.3f}")
-    rep.line(f"Novel / unseen defect: {'Yes' if result.get('is_novel_defect') else 'No'}")
+    rep.line(f"Defect type        : {result.get('defect', '?')}", bold=True)
+    rep.line(f"Confidence         : "
+             f"{min(float(result.get('vit_confidence', 0) or 0) * 100, 99.7):.1f}%")
+    rep.line(f"Severity           : {_sev_text(result)}")
+    rep.line(f"Anomaly score      : {float(result.get('anomaly_score', 0) or 0):.3f}")
+    rep.line(f"Novel / unseen     : {'Yes' if result.get('is_novel_defect') else 'No'}")
     rep.gap()
 
     # 2. factory metadata
-    rep.heading("2 \u00b7 Factory metadata")
+    rep.heading("2 . Factory metadata")
     meta = result.get("metadata", {}) or {}
-    rep.table(["field", "value"], [[str(k), str(v)] for k, v in meta.items()])
+    rep.table(["field", "value"],
+              [[str(k), str(v)[:30]] for k, v in meta.items()])
 
     # 3. similar past cases
-    rep.heading("3 \u00b7 Similar past cases")
-    sim_rows = [[str(i), r.get("label", ""), f'{r.get("similarity", 0):.3f}',
-                 fix_for(r.get("label", ""))]
+    rep.heading("3 . Similar past cases")
+    sim_rows = [[str(i), str(r.get("label", ""))[:30],
+                 f'{r.get("similarity", 0):.3f}', str(fix_for(r.get("label", "")))[:30]]
                 for i, r in enumerate(result.get("similar_cases", [])[:5], 1)]
     rep.table(["case", "defect", "similarity", "resolution / fix"], sim_rows)
 
     # 4. knowledge graph
-    rep.heading("4 \u00b7 Knowledge graph & memory")
-    know = kg.get_fix(result.get("defect", ""))
-    summ = result.get("defect", "unknown")
-    rep.line(f"Recommended fix for '{summ}': {know}", bold=True)
+    rep.heading("4 . Knowledge graph & memory")
+    fix = kg.get_fix(result.get("defect", ""))
+    rep.line(f"Recommended fix for '{result.get('defect', 'unknown')}': {fix}",
+             bold=True)
     rep.line(f"Recorded {len(cases)} inspections across the factory so far.")
     rep.gap()
 
     # 5. multi-agent root-cause analysis
-    rep.heading("5 \u00b7 AI root-cause analysis (multi-agent)")
+    rep.heading("5 . AI root-cause analysis (multi-agent)")
     if rca:
         votes = rca.get("votes") or []
-        vrows = [[v.get("role", ""), v.get("cause", ""),
+        vrows = [[str(v.get("role", ""))[:30], str(v.get("cause", ""))[:30],
                   f'{min(float(v.get("conf", 0) or 0) * 100, 99.7):.1f}%']
                  for v in votes]
         rep.table(["specialist", "hypothesis", "conf"], vrows)
-        winning = rca.get("winning_cause") or "\u2014"
-        rep.line(f"Winning root cause: {winning}",
+        rep.line(f"Winning root cause : {rca.get('winning_cause') or '-'}",
                  bold=True, color="#0b3d1e")
-        rep.line(f"Rationale: {rca.get('rationale', '')}")
+        rep.line(f"Rationale : {rca.get('rationale', '')}")
         actions = rca.get("actions") or []
         if actions:
             rep.line("Recommended actions:", bold=True)
             for a in actions:
-                rep.line(f"   \u2022 {a}")
+                rep.line(f"   - {a}")
     else:
         rep.line("(Run 'Explain root cause' to attach the analysis.)",
                  color="#6b7280")
     rep.gap()
 
     # 6. factory analytics
-    rep.heading("6 \u00b7 Factory analytics (all inspections)")
+    rep.heading("6 . Factory analytics (all inspections)")
     fp = min(h["factory_pct"], 99.7)
     tier = h["tier"]
-    meaning = ("The line is running clean \u2014 most parts pass."
+    meaning = ("The line is running clean - most parts pass."
                if tier == "Good"
-               else "Defect rate is elevated \u2014 keep an eye on it."
+               else "Defect rate is elevated - keep an eye on it."
                if tier == "Watch"
-               else "Defect rate is high \u2014 investigate now.")
-    rep.line(f"Factory health: {fp:.0f}%  (tier: {tier}) \u2014 {meaning}",
+               else "Defect rate is high - investigate now.")
+    rep.line(f"Factory health: {fp:.0f}%  (tier: {tier}) - {meaning}",
              bold=True, color="#0b3d1e")
     ai_conf = max(0.0, 100.0 - h["novel_rate"])
     rep.line(f"Parts inspected: {h['n']}   |   Defect rate: "
@@ -267,12 +287,13 @@ def build_pdf(image_path: str, result: dict, rca: dict | None,
     dist = Counter(c.get("defect_type") or c.get("defect") or "unknown"
                    for c in cases)
     n = max(1, h["n"])
-    dt_rows = [[k, str(v), f"{v / n * 100:.0f}%"] for k, v in dist.most_common()]
+    dt_rows = [[str(k)[:30], str(v), f"{v / n * 100:.0f}%"]
+               for k, v in dist.most_common()]
     rep.table(["defect type", "count", "share"], dt_rows)
 
-    mach_rows = [[k, f"{v:.0f}%"] for k, v in sorted(h["by_machine"].items())]
+    mach_rows = [[str(k)[:30], f"{v:.0f}%"] for k, v in sorted(h["by_machine"].items())]
     rep.table(["machine", "health"], mach_rows)
-    shift_rows = [[k, f"{v:.0f}%"] for k, v in sorted(h["by_shift"].items())]
+    shift_rows = [[str(k)[:30], f"{v:.0f}%"] for k, v in sorted(h["by_shift"].items())]
     rep.table(["shift", "health"], shift_rows)
 
     extra = []
@@ -281,7 +302,7 @@ def build_pdf(image_path: str, result: dict, rca: dict | None,
     if cal_p:
         extra.append((cal_p, "Confidence calibration"))
     if extra:
-        rep.images(extra, max_w=3.6, max_h=3.2)
+        rep.images(extra, max_w=3.4, max_h=3.0)
 
     rep.close()
     shutil.rmtree(td, ignore_errors=True)
