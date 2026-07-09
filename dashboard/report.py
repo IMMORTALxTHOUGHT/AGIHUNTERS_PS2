@@ -233,7 +233,8 @@ def build_pdf(image_path: str, result: dict, rca: dict | None,
                   f'{min(float(v.get("conf", 0) or 0) * 100, 99.7):.1f}%']
                  for v in votes]
         rep.table(["specialist", "hypothesis", "conf"], vrows)
-        rep.line(f"Winning root cause: {rca.get('winning_cause', '\u2014')}",
+        winning = rca.get("winning_cause") or "\u2014"
+        rep.line(f"Winning root cause: {winning}",
                  bold=True, color="#0b3d1e")
         rep.line(f"Rationale: {rca.get('rationale', '')}")
         actions = rca.get("actions") or []
