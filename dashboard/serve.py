@@ -16,8 +16,9 @@ from __future__ import annotations
 import json
 import base64
 import os
+import glob
 import uuid
-import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -115,6 +116,54 @@ def sample_part() -> dict:
     return {"image": _b64_png(img), "name": os.path.basename(pick)}
 
 
+def run_batch(folder: str, images: list) -> dict:
+    """Batch inspection: a folder path on the box and/or multiple uploaded
+    images. Each part is classified + heatmapped and auto-logged so Analytics
+    and the Knowledge Graph grow from the batch."""
+    paths: list = []
+    if folder:
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.bmp"):
+            paths += glob.glob(os.path.join(folder, "**", ext), recursive=True)
+    for im in (images or []):
+        b64 = im.get("image", "")
+        if "," in b64:
+            b64 = b64.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            continue
+        ext = ".jpg" if (im.get("name", "")).lower().endswith((".jpg", ".jpeg")) else ".png"
+        p = str(OUTPUTS_DIR / f"batch_{uuid.uuid4().hex}{ext}")
+        with open(p, "wb") as f:
+            f.write(raw)
+        paths.append(p)
+    paths = sorted(set(paths))
+    if not paths:
+        return {"count": 0, "rows": [], "gallery": []}
+
+    rows, gallery = [], []
+    for p in paths:
+        try:
+            result = engine.infer_one(p)
+        except Exception:
+            continue
+        engine._memory.record_inspection(result, p)  # grow memory + KG
+        defect = result.get("defect", "unknown")
+        sev = {"high": "High", "mid": "Mid", "low": "Low",
+               "review": "Review"}[engine._severity(result)]
+        rows.append({
+            "file": os.path.basename(p),
+            "defect": defect,
+            "conf": engine._pct(result.get("vit_confidence", 0.0)),
+            "severity": sev,
+            "anomaly": f'{result.get("anomaly_score", 0.0):.2f}',
+            "novel": "YES" if result.get("is_novel_defect") else "no",
+        })
+        if len(gallery) < 24 and result.get("heatmap_overlay") is not None:
+            gallery.append(_b64_png(result["heatmap_overlay"]))
+    return {"count": len(rows), "rows": rows, "gallery": gallery}
+
+
 def build_report(path: str) -> bytes:
     result = engine.infer_one(path)
     defect = result.get("defect", "unknown")
@@ -191,6 +240,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
             except Exception as e:  # surface backend errors to the UI
+                traceback.print_exc()
+                body = json.dumps({"error": str(e)}).encode()
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/api/batch":
+            try:
+                out = run_batch(data.get("folder", ""), data.get("images", []))
+                body = json.dumps(out).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+            except Exception as e:
+                traceback.print_exc()
                 body = json.dumps({"error": str(e)}).encode()
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
