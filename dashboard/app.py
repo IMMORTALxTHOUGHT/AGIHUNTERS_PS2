@@ -78,13 +78,38 @@ def _esc(s) -> str:
     return html.escape(str(s))
 
 
+def _pct(x) -> str:
+    try:
+        return f"{float(x) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return str(x)
+
+
+def _file_paths(files):
+    """Gradio gr.File(multiple) returns a list of paths (str list in 3.x/4.x,
+    or FileData/dict in some versions) — normalize to a list of path strings."""
+    if not files:
+        return []
+    if not isinstance(files, (list, tuple)):
+        files = [files]
+    out = []
+    for f in files:
+        if isinstance(f, str):
+            out.append(f)
+        elif isinstance(f, dict):
+            out.append(f.get("name") or f.get("path") or "")
+        else:
+            out.append(getattr(f, "name", "") or str(f))
+    return [p for p in out if p]
+
+
 def _badge(result: dict) -> str:
     if result["is_novel_defect"]:
         return ('<div class="fm-badge novel">NOVEL DEFECT &mdash; low confidence, '
                 'review needed</div>')
     return (f'<div class="fm-badge ok">&#10004; {_esc(result["defect"])} '
             f'<span style="font-weight:400;color:#93a1b0"> &middot; conf '
-            f'{result["vit_confidence"]:.2f}</span></div>')
+            f'{_pct(result["vit_confidence"])}</span></div>')
 
 
 def _similar_html(result: dict) -> str:
@@ -92,11 +117,15 @@ def _similar_html(result: dict) -> str:
     if not rows:
         return '<div class="fm-empty">No similar cases yet.</div>'
     trs = "".join(
-        f'<tr><td>{_esc(r.get("label"))}</td>'
-        f'<td class="sim">{r.get("similarity", 0):.3f}</td></tr>'
-        for r in rows)
-    return (f'<table class="fm-tbl"><thead><tr><th>defect</th>'
-            f'<th>similarity</th></tr></thead><tbody>{trs}</tbody></table>')
+        f'<tr><td>{i}</td>'
+        f'<td>{_esc(r.get("label"))}</td>'
+        f'<td class="sim">{r.get("similarity", 0):.3f}</td>'
+        f'<td>{_esc(_memory.get_knowledge(r.get("label", ""))["fix"])}</td></tr>'
+        for i, r in enumerate(rows, 1))
+    return (f'<table class="fm-tbl"><thead><tr><th>case</th>'
+            f'<th>defect</th><th>similarity</th>'
+            f'<th>resolution / fix</th></tr></thead>'
+            f'<tbody>{trs}</tbody></table>')
 
 
 def _meta_html(result: dict) -> str:
@@ -156,7 +185,7 @@ def _rca_html(image_path) -> str:
     vote_rows = "".join(
         f'<tr><td>{_esc(v["role"])}</td>'
         f'<td>{_esc(v["cause"])}</td>'
-        f'<td class="sim">{v["conf"]:.2f}</td></tr>'
+        f'<td class="sim">{_pct(v["conf"])}</td></tr>'
         for v in votes)
     votes_html = (f'<table class="fm-tbl"><thead><tr><th>specialist</th>'
                   f'<th>hypothesis</th><th>conf</th></tr></thead>'
@@ -175,7 +204,7 @@ def _rca_html(image_path) -> str:
         f'<div class="fm-title" style="margin-top:14px">winning root cause</div>'
         f'<div class="fm-badge novel" style="white-space:normal">'
         f'{_esc(verdict["winning_cause"])} '
-        f'<span style="font-weight:400"> &middot; conf {verdict.get("conf", 0):.2f}</span></div>'
+        f'<span style="font-weight:400"> &middot; conf {_pct(verdict.get("conf", 0))}</span></div>'
         f'<div class="fm-empty" style="margin-top:8px">{_esc(verdict.get("rationale", ""))}</div>'
         f'<div class="fm-title" style="margin-top:14px">recommended actions</div>'
         f'<ul class="fm-tbl" style="color:#e6edf4;padding-left:18px">'
@@ -225,7 +254,7 @@ def _analytics_payload():
         f'<td class="sim">{b["novel_rate"] * 100:.0f}%</td></tr>'
         for b in calib["bins"])
     calib_html = (
-        f'<div class="fm-empty">mean conf {calib["mean_conf"]:.2f} &middot; '
+        f'<div class="fm-empty">mean conf {_pct(calib["mean_conf"])} &middot; '
         f'overall novel rate {calib["novel_rate"] * 100:.0f}% '
         f'(low-conf bins should be mostly novel)</div>'
         f'<table class="fm-tbl"><thead><tr><th>conf bin</th><th>cases</th>'
@@ -268,17 +297,17 @@ def teach(image_path, label):
             f'{know["summary"]["inspections"]} inspections recorded so far.</div>')
 
 
-def _batch_inspect(folder):
-    empty = '<div class="fm-empty">Enter a folder path first.</div>'
-    if not folder:
-        return (empty, None)
+def _batch_inspect(folder, files):
+    empty = '<div class="fm-empty">Enter a folder path or add images first.</div>'
 
     paths = []
-    for ext in ("*.png", "*.jpg", "*.jpeg", "*.bmp"):
-        paths += glob.glob(os.path.join(folder, "**", ext), recursive=True)
-    paths = sorted(paths)
+    if folder:
+        for ext in ("*.png", "*.jpg", "*.jpeg", "*.bmp"):
+            paths += glob.glob(os.path.join(folder, "**", ext), recursive=True)
+    paths += _file_paths(files)
+    paths = sorted(set(paths))
     if not paths:
-        return ('<div class="fm-empty">No images found in that folder.</div>', None)
+        return (empty, None)
 
     rows, gallery, dist = [], [], Counter()
     for path in paths:
@@ -295,7 +324,7 @@ def _batch_inspect(folder):
         sim = (result["similar_cases"][0].get("label", "-")
                if result["similar_cases"] else "-")
         rows.append((os.path.basename(path), defect,
-                     f'{result["vit_confidence"]:.2f}',
+                     _pct(result["vit_confidence"]),
                      f'{result["anomaly_score"]:.2f}',
                      "YES" if result["is_novel_defect"] else "no", sim))
         if len(gallery) < 24:
@@ -380,19 +409,22 @@ def build():
                           inputs=None,
                           outputs=[dna_img, health_html, cal_img, calib_html])
 
-        gr.HTML('<div class="fm-sec">08 &mdash; Batch inspect a folder</div>')
+        gr.HTML('<div class="fm-sec">08 &mdash; Batch inspect (folder or images)</div>')
         with gr.Row():
-            with gr.Column(scale=8, elem_classes="fm-card"):
+            with gr.Column(scale=6, elem_classes="fm-card"):
                 folder_in = gr.Textbox(
                     label="Folder path of parts",
                     placeholder="/abs/path/to/folder (e.g. datasets/mvtec/bottle/test/broken_large)",
                     lines=1)
-            with gr.Column(scale=2, elem_classes="fm-card"):
-                batch_btn = gr.Button("Inspect folder", variant="primary")
-        batch_table = gr.HTML('<div class="fm-empty">Enter a folder path, then inspect.</div>')
+            with gr.Column(scale=6, elem_classes="fm-card"):
+                files_in = gr.File(
+                    label="Or add images (select multiple)",
+                    file_count="multiple", file_types=["image"])
+        batch_btn = gr.Button("Inspect", variant="primary")
+        batch_table = gr.HTML('<div class="fm-empty">Enter a folder path or add images, then inspect.</div>')
         batch_gallery = gr.Gallery(label="Heatmap overlays (up to 24)", height=300)
 
-        batch_btn.click(_batch_inspect, inputs=folder_in,
+        batch_btn.click(_batch_inspect, inputs=[folder_in, files_in],
                         outputs=[batch_table, batch_gallery])
 
     return demo

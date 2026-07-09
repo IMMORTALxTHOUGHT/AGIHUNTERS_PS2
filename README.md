@@ -67,7 +67,7 @@ python3 -m dashboard.app
 3. **AI root-cause analysis** — *Explain root cause* launches the 3-agent debate → winning cause, rationale, and actions (saved to the case).
 4. **Teach & learn** — type the correct label to record a human-verified example into FAISS.
 5. **Analytics** — *Refresh analytics* shows Defect-DNA scatter, factory-health tier, and confidence calibration.
-6. **Batch inspect a folder** — enter a folder path to process every image, auto-logging each one.
+6. **Batch inspect** — enter a folder path *or* select multiple images to process them all at once, auto-logging each one.
 
 ## Project layout
 
