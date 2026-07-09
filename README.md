@@ -55,6 +55,11 @@ ollama serve          # serves OpenAI-compatible API at http://localhost:11434/v
 # 3. run the dashboard
 python3 -m dashboard.app
 # open http://localhost:7860  (or GRADIO_SHARE=1 python3 -m dashboard.app for a public link)
+
+# 3b. (recommended) run the standalone "Forge HUD" frontend instead —
+#     a custom inspection terminal backed by the same engine, no Gradio:
+python3 -m dashboard.serve
+# open http://localhost:7860  (GRADIO_SHARE=1 also works for a public tunnel)
 ```
 
 > Models/weights and datasets are large and kept on the box only (see
@@ -96,6 +101,8 @@ analytics/
   health.py            factory-health tiers
   calibration.py       confidence calibration summary
 dashboard/app.py       Gradio UI (8 sections)
+dashboard/serve.py      dependency-free web server for the standalone Forge HUD
+dashboard/static/index.html  the Forge HUD frontend (custom UI, no Gradio)
 scripts/visual_test.py verifies a single image as a 2×3 figure
 ```
 
