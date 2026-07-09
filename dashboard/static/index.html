@@ -243,18 +243,30 @@ footer{margin-top:30px;text-align:center;font-family:var(--mono);font-size:10px;
     <!-- LEFT: inspection -->
     <div class="col">
       <div class="panel reveal" style="animation-delay:.05s">
-        <div class="phead"><span class="pidx">00</span><span class="ptitle">Part Intake</span><span class="psub">optical · thermal</span></div>
+        <div class="phead"><span class="pidx">00</span><span class="ptitle">Part Intake</span><span class="psub">single · multi · folder</span></div>
         <div class="drop" id="drop">
           <div class="ic">⤓</div>
           <div class="t">Drop a part image</div>
           <div class="s">or click to browse — JPG / PNG</div>
         </div>
         <input type="file" id="file" accept="image/*" class="hidden">
-        <div class="or">— or paste a dataset path on the box —</div>
+        <div class="or">— or —</div>
+        <div class="batch-grid">
+          <div>
+            <div class="fm-title">Multiple images</div>
+            <div class="drop small" id="bdrop"><div class="t">+ add images</div>
+              <input id="bfiles" type="file" multiple accept="image/*" class="hidden"></div>
+          </div>
+          <div>
+            <div class="fm-title">Folder on the box</div>
+            <input id="bfolder" class="tin" placeholder="/abs/path/to/parts (e.g. datasets/mvtec/bottle/test/broken_large)">
+          </div>
+        </div>
         <div class="actions">
           <button class="btn primary" id="go">Inspect ▸</button>
           <button class="btn" id="sample">Load sample</button>
         </div>
+        <div id="batchOut" class="hidden"></div>
       </div>
 
       <div class="panel reveal" style="animation-delay:.1s">
@@ -302,29 +314,6 @@ footer{margin-top:30px;text-align:center;font-family:var(--mono);font-size:10px;
         <div class="phead"><span class="pidx">05</span><span class="ptitle">Knowledge Graph</span><span class="psub">memory</span></div>
         <div id="kg"><div class="fm-empty">Awaiting inspection…</div></div>
       </div>
-    </div>
-  </div>
-
-  <div class="panels" style="margin-top:18px">
-    <div class="panel reveal" style="animation-delay:.3s">
-      <div class="phead"><span class="pidx">02</span><span class="ptitle">Batch Inspection</span><span class="psub">folder · multi</span></div>
-      <div class="batch-grid">
-        <div>
-          <div class="fm-title">Folder on the box</div>
-          <input id="bfolder" class="tin" placeholder="/abs/path/to/parts (e.g. datasets/mvtec/bottle/test/broken_large)">
-        </div>
-        <div>
-          <div class="fm-title">Or upload images</div>
-          <div class="drop small" id="bdrop">
-            <div class="t">+ add images</div>
-            <input id="bfiles" type="file" multiple accept="image/*" class="hidden">
-          </div>
-        </div>
-      </div>
-      <div class="actions">
-        <button class="btn primary" id="batchGo">Run batch ▸</button>
-      </div>
-      <div id="batchOut"><div class="fm-empty">Add a folder path on the box or upload images, then run batch.</div></div>
     </div>
   </div>
 
@@ -423,7 +412,9 @@ function render(d){
   $("#similar").innerHTML = d.similar_html;
   $("#meta").innerHTML = d.meta_html;
   $("#kg").innerHTML = d.kg_html;
-  $("#rca").innerHTML = d.rca_html;
+  // RCA is the slow LLM step — show a live placeholder, then fetch it
+  $("#rca").innerHTML = '<div class="fm-empty">▮ Multi-agent root-cause debate in progress…</div>';
+  loadRCA(d.path);
   $("#analytics").innerHTML = d.analytics_html;
 
   if(d.dna){ $("#dna").src=d.dna; $("#dna").classList.remove("hidden");
@@ -446,7 +437,13 @@ $("#tOpt").onclick = ()=>{ viewMode="opt"; $("#tOpt").classList.add("on"); $("#t
 $("#tThm").onclick = ()=>{ viewMode="thm"; $("#tThm").classList.add("on"); $("#tOpt").classList.remove("on");
   if(last) $("#vpImg").src = last.viewport; };
 
-$("#go").onclick = inspect;
+$("#go").onclick = go;
+async function go(){
+  const folder = $("#bfolder").value.trim();
+  if(folder || bSel.length){ return batch(); }   // multi/folder -> batch
+  if(current && current.image){ return inspect(); } // single -> full analysis
+  flash("Select a part image, multiple images, or a folder path first.");
+}
 $("#sample").onclick = async ()=>{
   // ask the engine for a sample from the store by hitting inspect with a known dataset file
   try{
@@ -490,7 +487,7 @@ async function batch(){
     images.push({image:r, name:f.name});
   }
   if(!folder && images.length===0){ flash("Add a folder path on the box or upload images first."); return; }
-  $("#batchGo").textContent = "Running…";
+  $("#go").textContent = "Running…";
   try{
     const r = await fetch("/api/batch",{method:"POST",headers:{"Content-Type":"application/json"},
       body: JSON.stringify({folder, images})});
@@ -498,11 +495,12 @@ async function batch(){
     if(d.error){ flash("Batch: "+d.error); return; }
     renderBatch(d);
   }catch(e){ flash("Batch failed: "+e.message); }
-  finally{ $("#batchGo").textContent = "Run batch ▸"; }
+  finally{ $("#go").textContent = "Inspect ▸"; }
 }
 
 function renderBatch(d){
   const out = $("#batchOut");
+  out.classList.remove("hidden");
   if(!d.count){ out.innerHTML='<div class="fm-empty">No images could be processed.</div>'; return; }
   const rows = d.rows.map(r=>
     `<tr><td>${r.file}</td><td>${r.defect}</td><td>${r.conf}</td><td>${r.severity}</td><td>${r.anomaly}</td><td>${r.novel}</td></tr>`).join("");
@@ -516,7 +514,19 @@ function renderBatch(d){
   out.innerHTML = table + gal;
 }
 
-$("#batchGo").onclick = batch;
+async function loadRCA(path){
+  if(!path) return;
+  try{
+    const r = await fetch("/api/rca",{method:"POST",headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({path})});
+    const d = await r.json();
+    if(d.error){ $("#rca").innerHTML='<div class="fm-empty">RCA unavailable: '+d.error+'</div>'; return; }
+    $("#rca").innerHTML = d.rca_html;
+    if(d.kg_html) $("#kg").innerHTML = d.kg_html;  // refresh KG with RCA-learned edges
+  }catch(e){
+    $("#rca").innerHTML='<div class="fm-empty">RCA failed: '+e.message+'</div>';
+  }
+}
 
 function flash(msg){ banner(msg); }
 function banner(msg){

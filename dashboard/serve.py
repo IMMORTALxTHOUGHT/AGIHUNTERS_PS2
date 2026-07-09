@@ -69,8 +69,9 @@ def run_inspection(image_b64: str, name: str) -> dict:
     orig_b64 = _b64_png(orig) if orig is not None else ""
     overlay_b64 = _b64_png(overlay) if overlay is not None else ""
 
-    # analysis panels (reuse the exact HTML builders)
-    rca_block, _ = engine._rca_html(path)  # also grows the KG via record_rca
+    # analysis panels (reuse the exact HTML builders) — everything EXCEPT the
+    # slow multi-agent RCA, which is fetched separately so the fast panels
+    # render immediately while the agents debate in the background.
     report_html, dna_path, cal_path = engine._analytics_payload()
 
     dna_b64 = _b64_png(cv2.imread(dna_path)) if dna_path and os.path.exists(dna_path) else ""
@@ -87,13 +88,19 @@ def run_inspection(image_b64: str, name: str) -> dict:
         "similar_html": engine._similar_html(result),
         "meta_html": engine._meta_html(result),
         "kg_html": engine._kg_html(result),
-        "rca_html": rca_block,
         "analytics_html": report_html,
         "dna": dna_b64,
         "calibration": cal_b64,
         "system": _system_status(),
         "path": path,
     }
+
+
+def run_rca(path: str) -> dict:
+    """The multi-agent root-cause debate — kept separate so the rest of the
+    inspection renders instantly while this (LLM-bound) step runs."""
+    rca_block, kg_block = engine._rca_html(path)
+    return {"rca_html": rca_block, "kg_html": kg_block}
 
 
 def sample_part() -> dict:
@@ -240,6 +247,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
             except Exception as e:  # surface backend errors to the UI
+                traceback.print_exc()
+                body = json.dumps({"error": str(e)}).encode()
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self._cors()
+            self.end_headers()
+            self.wfile.write(body)
+
+        elif path == "/api/rca":
+            try:
+                out = run_rca(data.get("path", ""))
+                body = json.dumps(out).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+            except Exception as e:
                 traceback.print_exc()
                 body = json.dumps({"error": str(e)}).encode()
                 self.send_response(500)
