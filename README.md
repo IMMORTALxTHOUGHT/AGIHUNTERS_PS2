@@ -62,14 +62,15 @@ python3 -m dashboard.app
 
 ## Using the dashboard
 
-1. **Add part(s)** (top, Section 01) — upload a **single image**, **multiple images**, *or* a **folder path**, then hit *Inspect*. Single → heatmap + class badge; multiple/folder → batch table + gallery.
-2. **Batch results** (Section 02) — summary table + heatmap gallery for multi/folder inputs.
+1. **Add part(s)** (top, Section 01) — upload a **single image**, **multiple images**, *or* a **folder path**, then hit *Inspect*. Single → heatmap + class badge + **severity** (High/Mid/Low); multiple/folder → batch table + gallery.
+2. **Batch results** (Section 02) — summary table (per-part severity included) + heatmap gallery.
 3. **Similar past cases** — case #, defect, similarity, and recommended fix.
 4. **Factory metadata** — simulated line/shift/machine/condition for the inspected part.
 5. **Knowledge graph & memory** — associated conditions + recommended fix, accumulated across all inspections.
 6. **AI root-cause analysis** — *Explain root cause* launches the 3-agent debate → winning cause, rationale, and actions (saved to the case).
 7. **Teach & learn** — type the correct label to record a human-verified example into FAISS.
-8. **Analytics** — *Refresh analytics* shows Defect-DNA scatter, factory-health tier, and confidence calibration.
+8. **Future failure risk** — projected risk if the part stays in service (Now → 24h → 72h → 1 week, with a safe-cycles estimate). Confidence is capped below 100% everywhere — a model can't predict with absolute certainty.
+9. **Analytics** — *Refresh analytics* shows Defect-DNA scatter, factory-health tier, and confidence calibration.
 
 ## Project layout
 

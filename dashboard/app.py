@@ -62,6 +62,16 @@ CSS = """
 .fm-tbl td { padding: 7px 8px; border-bottom: 1px solid #212b36; color: #e6edf4; }
 .fm-tbl td.sim { font-family: ui-monospace, monospace; color: #3b82f6; }
 .fm-empty { color: #5f6b78; font-size: 13px; padding: 12px; }
+.fm-progress { height: 10px; border-radius: 6px; background: #0d141b;
+  border: 1px solid #212b36; overflow: hidden; margin: 10px 0 8px; }
+.fm-progress-bar { height: 100%; background: #22c55e; transition: width .3s; }
+.fm-metrics { display: flex; gap: 10px; flex-wrap: wrap; }
+.fm-metric { flex: 1 1 0; min-width: 92px; background: #0d141b;
+  border: 1px solid #212b36; border-radius: 10px; padding: 10px; text-align: center; }
+.fm-metric-v { font-size: 17px; font-weight: 700; color: #e6edf4;
+  font-family: ui-monospace, monospace; }
+.fm-metric-k { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: #93a1b0; margin-top: 3px; }
 footer, .footer, .show-api { display: none !important; }
 """
 
@@ -80,7 +90,9 @@ def _esc(s) -> str:
 
 def _pct(x) -> str:
     try:
-        return f"{float(x) * 100:.0f}%"
+        # never show 100% — a model can't predict with absolute certainty
+        p = min(float(x) * 100, 99.7)
+        return f"{p:.1f}%"
     except (TypeError, ValueError):
         return str(x)
 
@@ -110,6 +122,31 @@ def _badge(result: dict) -> str:
     return (f'<div class="fm-badge ok">&#10004; {_esc(result["defect"])} '
             f'<span style="font-weight:400;color:#93a1b0"> &middot; conf '
             f'{_pct(result["vit_confidence"])}</span></div>')
+
+
+def _severity(result: dict) -> str:
+    """High / mid / low severity from the anomaly signal + confidence.
+    Thresholds are on the raw PatchCore L2 anomaly score and can be tuned
+    to your dataset's scale."""
+    if result.get("is_novel_defect"):
+        return "review"
+    score = float(result.get("anomaly_score", 0.0))
+    conf = float(result.get("vit_confidence", 1.0))
+    if score >= 1.0 or conf < 0.55:
+        return "high"
+    if score >= 0.4 or conf < 0.80:
+        return "mid"
+    return "low"
+
+
+def _severity_badge(result: dict) -> str:
+    spec = {
+        "high":   ("novel", "High severity &mdash; strong anomaly"),
+        "mid":    ("idle",  "Mid severity &mdash; moderate anomaly"),
+        "low":    ("ok",    "Low severity &mdash; weak anomaly"),
+        "review": ("novel", "Needs review &mdash; novel / low-confidence"),
+    }[_severity(result)]
+    return f'<div class="fm-badge {spec[0]}">{spec[1]}</div>'
 
 
 def _similar_html(result: dict) -> str:
@@ -218,6 +255,48 @@ def _rca_html(image_path) -> str:
     return (rca_block, kg_block)
 
 
+def _risk_html(result: dict) -> str:
+    """Projected failure risk if the part stays in service.
+    Heuristic: current risk = model confidence (defect probability), then
+    degrades over time. Capped so it never reads 100%."""
+    now = min(float(result.get("vit_confidence", 0.0)) * 100, 99.7)
+    day1 = min(now + 5, 99.7)
+    day3 = min(now + 15, 99.7)
+    week1 = min(now + 30, 99.7)
+    risk = week1
+
+    if risk < 40:
+        level, cls, icon, color = "LOW", "ok", "\U0001F7E2", "#22c55e"
+    elif risk < 70:
+        level, cls, icon, color = "MODERATE", "idle", "\U0001F7E1", "#eab308"
+    elif risk < 90:
+        level, cls, icon, color = "HIGH", "novel", "\U0001F7E0", "#ff6a33"
+    else:
+        level, cls, icon, color = "CRITICAL", "novel", "\U0001F534", "#ef4444"
+
+    # rough estimate of safe operating cycles before failure
+    safe_cycles = max(0, int((100 - risk) * 12))
+    metrics = [
+        ("Now", f"{now:.1f}%"),
+        ("24 Hours", f"{day1:.1f}%"),
+        ("72 Hours", f"{day3:.1f}%"),
+        ("1 Week", f"{week1:.1f}%"),
+        ("Safe Cycles", str(safe_cycles)),
+    ]
+    mhtml = "".join(
+        f'<div class="fm-metric"><div class="fm-metric-v">{v}</div>'
+        f'<div class="fm-metric-k">{k}</div></div>'
+        for k, v in metrics)
+    return (
+        f'<div class="fm-badge {cls}">{icon} {level} RISK &middot; {risk:.1f}%</div>'
+        f'<div class="fm-progress"><div class="fm-progress-bar" '
+        f'style="width:{min(risk, 100):.0f}%;background:{color}"></div></div>'
+        f'<div class="fm-metrics">{mhtml}</div>'
+        f'<div class="fm-empty">Projected failure risk if the part stays in '
+        f'service &mdash; heuristic estimate from current confidence.</div>'
+    )
+
+
 def _analytics_payload():
     conn = database.get_connection()
     cases = database.get_cases(conn)
@@ -233,12 +312,12 @@ def _analytics_payload():
 
     tier_cls = ("ok" if h["tier"] == "Good"
                 else "novel" if h["tier"] == "Critical" else "idle")
-    mach = "".join(f'<tr><td>{_esc(k)}</td><td>{v:.0f}%</td></tr>'
+    mach = "".join(f'<tr><td>{_esc(k)}</td><td>{min(v, 99.7):.0f}%</td></tr>'
                    for k, v in sorted(h["by_machine"].items()))
-    shift = "".join(f'<tr><td>{_esc(k)}</td><td>{v:.0f}%</td></tr>'
+    shift = "".join(f'<tr><td>{_esc(k)}</td><td>{min(v, 99.7):.0f}%</td></tr>'
                     for k, v in sorted(h["by_shift"].items()))
     health_html = (
-        f'<div class="fm-badge {tier_cls}">Factory health: {h["factory_pct"]:.0f}% '
+        f'<div class="fm-badge {tier_cls}">Factory health: {min(h["factory_pct"], 99.7):.0f}% '
         f'&middot; {h["tier"]}</div>'
         f'<div class="fm-empty" style="margin-top:8px">'
         f'{h["n"]} inspections &middot; defect rate {h["defect_rate"]:.0f}% '
@@ -265,10 +344,11 @@ def _analytics_payload():
 
 
 def analyze(image_path):
+    idle = '<div class="fm-badge idle">Awaiting a part&hellip;</div>'
+    idle_sev = '<div class="fm-badge idle">&mdash;</div>'
+    empty = '<div class="fm-empty">Awaiting inspection&hellip;</div>'
     if not image_path:
-        idle = '<div class="fm-badge idle">Awaiting a part&hellip;</div>'
-        empty = '<div class="fm-empty">Awaiting inspection&hellip;</div>'
-        return (None, idle, empty, empty, empty)
+        return (None, idle, idle_sev, empty, empty, empty, empty)
 
     result = infer_one(image_path)
     overlay_bgr = result["heatmap_overlay"]
@@ -279,7 +359,8 @@ def analyze(image_path):
     if case_id is not None:
         _last_case_id[image_path] = case_id
 
-    return (overlay_rgb, _badge(result), _similar_html(result),
+    return (overlay_rgb, _badge(result), _severity_badge(result),
+            _risk_html(result), _similar_html(result),
             _meta_html(result), _kg_html(result))
 
 
@@ -323,8 +404,10 @@ def _batch_inspect(folder, files):
         overlay = cv2.cvtColor(result["heatmap_overlay"], cv2.COLOR_BGR2RGB)
         sim = (result["similar_cases"][0].get("label", "-")
                if result["similar_cases"] else "-")
+        sev = {"high": "High", "mid": "Mid", "low": "Low",
+               "review": "Review"}[_severity(result)]
         rows.append((os.path.basename(path), defect,
-                     _pct(result["vit_confidence"]),
+                     _pct(result["vit_confidence"]), sev,
                      f'{result["anomaly_score"]:.2f}',
                      "YES" if result["is_novel_defect"] else "no", sim))
         if len(gallery) < 24:
@@ -335,14 +418,15 @@ def _batch_inspect(folder, files):
 
     trs = "".join(
         f'<tr><td>{_esc(r[0])}</td><td>{_esc(r[1])}</td><td>{r[2]}</td>'
-        f'<td>{r[3]}</td><td>{r[4]}</td><td>{_esc(r[5])}</td></tr>'
+        f'<td>{r[3]}</td><td>{r[4]}</td><td>{r[5]}</td><td>{_esc(r[6])}</td></tr>'
         for r in rows)
     dist_html = " · ".join(f'{_esc(k)}: {v}' for k, v in dist.most_common())
     table = (
         f'<div class="fm-empty">{len(rows)} parts inspected · '
         f'distribution: {dist_html}</div>'
         f'<table class="fm-tbl"><thead><tr><th>file</th><th>defect</th>'
-        f'<th>conf</th><th>anomaly</th><th>novel</th><th>top similar</th>'
+        f'<th>conf</th><th>severity</th><th>anomaly</th><th>novel</th>'
+        f'<th>top similar</th>'
         f'</tr></thead><tbody>{trs}</tbody></table>'
     )
     return (table, gallery)
@@ -350,18 +434,23 @@ def _batch_inspect(folder, files):
 
 def _inspect(img, files, folder):
     idle_badge = '<div class="fm-badge idle">Awaiting a single part&hellip;</div>'
+    idle_sev = '<div class="fm-badge idle">&mdash;</div>'
+    idle_risk = '<div class="fm-badge idle">&mdash;</div>'
     empty = '<div class="fm-empty">Awaiting inspection&hellip;</div>'
     # batch mode when a folder or multiple files are provided
     if folder or _file_paths(files):
         table, gallery = _batch_inspect(folder, files)
-        return (None, idle_badge, table, gallery, empty, empty, empty)
+        return (None, idle_badge, idle_sev, idle_risk, table, gallery,
+                empty, empty, empty)
     # single mode
     if img:
-        overlay_rgb, badge, sim, meta, kg = analyze(img)
+        overlay_rgb, badge, severity, risk, sim, meta, kg = analyze(img)
         batch_idle = ('<div class="fm-empty">Single-part mode &mdash; add a folder '
                       'or multiple images in Section 01 for batch.</div>')
-        return (overlay_rgb, badge, batch_idle, None, sim, meta, kg)
-    return (None, idle_badge, empty, None, empty, empty, empty)
+        return (overlay_rgb, badge, severity, risk, batch_idle, None,
+                sim, meta, kg)
+    return (None, idle_badge, idle_sev, idle_risk, empty, None,
+            empty, empty, empty)
 
 
 def build():
@@ -390,6 +479,7 @@ def build():
                 overlay = gr.Image(label="Anomaly heatmap overlay", height=280)
             with gr.Column(scale=5, elem_classes="fm-card"):
                 badge = gr.HTML('<div class="fm-badge idle">Awaiting a part&hellip;</div>')
+                severity_html = gr.HTML('<div class="fm-badge idle">&mdash;</div>')
 
         # ---- 02: BATCH RESULTS ----
         gr.HTML('<div class="fm-sec">02 &mdash; Batch results</div>')
@@ -424,8 +514,12 @@ def build():
             with gr.Column(elem_classes="fm-card"):
                 learn_html = gr.HTML('<div class="fm-empty">Awaiting feedback.</div>')
 
-        # ---- 08: ANALYTICS ----
-        gr.HTML('<div class="fm-sec">08 &mdash; Analytics (from inspection history)</div>')
+        # ---- 08: FUTURE FAILURE RISK ----
+        gr.HTML('<div class="fm-sec">08 &mdash; Future failure risk</div>')
+        risk_html = gr.HTML('<div class="fm-badge idle">&mdash;</div>')
+
+        # ---- 09: ANALYTICS ----
+        gr.HTML('<div class="fm-sec">09 &mdash; Analytics (from inspection history)</div>')
         with gr.Row():
             refresh_btn = gr.Button("Refresh analytics", variant="primary")
         with gr.Row():
@@ -442,7 +536,8 @@ def build():
         inspect_btn.click(
             _inspect,
             inputs=[img, files_in, folder_in],
-            outputs=[overlay, badge, batch_table, batch_gallery,
+            outputs=[overlay, badge, severity_html, risk_html,
+                     batch_table, batch_gallery,
                      similar_html, meta_html, kg_html])
         teach_btn.click(teach, inputs=[img, label_in], outputs=learn_html)
         rca_btn.click(_rca_html, inputs=img, outputs=[rca_html, kg_html])
