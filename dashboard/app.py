@@ -26,9 +26,9 @@ from analytics.dna_pca import render_dna_figure
 from analytics.health import health
 from analytics.calibration import render_calibration_figure
 try:
-    from report import build_pdf, build_batch_pdf
+    from report import build_pdf
 except ImportError:  # when run as `python3 -m dashboard.app`
-    from dashboard.report import build_pdf, build_batch_pdf
+    from dashboard.report import build_pdf
 
 _memory = Memory()
 _last_case_id: dict = {}
