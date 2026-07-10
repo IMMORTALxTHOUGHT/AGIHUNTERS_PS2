@@ -86,6 +86,66 @@ def build_debate_prompts(defect, metadata, similar_labels, kg_info) -> list:
     ]
 
 
+def build_group_debate_prompts(defect_type, summary, members, kg_info) -> list:
+    """Like build_debate_prompts but for a BATCH GROUP: many parts that share
+    the same defect type. The agents receive the aggregated metadata, the
+    severity distribution, and the per-member list so they can find the
+    *common* root cause (e.g. "7 of 9 came off Machine 3 on night shift")."""
+    causes = kg_info.get("causes", []) if kg_info else []
+    fix = kg_info.get("fix", "") if kg_info else ""
+    causes_str = "; ".join(f"{c['condition']} (seen {c['count']}x)" for c in causes) or "none yet"
+    member_view = [
+        {"file": m.get("file"),
+         "conf": round(float(m.get("conf", 0) or 0), 3),
+         "severity": m.get("severity"),
+         "anomaly": round(float(m.get("anomaly", 0) or 0), 3)}
+        for m in (members or [])[:25]
+    ]
+    common = (summary or {}).get("common_conditions", {})
+    base = (
+        f"\nThere are {summary.get('count', '?')} parts in this batch sharing "
+        f"defect '{defect_type}'. Use the aggregated metadata, severity "
+        f"distribution, and member list to identify the SINGLE most likely "
+        f"COMMON root cause. Patterns in Machine/Shift/Operator/Material/"
+        f"Supplier across members are strong signals. "
+        'Respond ONLY with JSON: {"cause": str, "reasoning": str, "conf": float 0..1}.'
+    )
+
+    process_ctx = {
+        "defect_type": defect_type, "n_parts": summary.get("count"),
+        "severity_dist": summary.get("severity_dist"),
+        "avg_anomaly": summary.get("avg_anomaly"),
+        "Temperature": common.get("Temperature"), "Pressure": common.get("Pressure"),
+        "Humidity": common.get("Humidity"), "Shift": common.get("Shift"),
+        "kg_associated": causes_str, "kg_fix": fix, "members": member_view,
+    }
+    materials_ctx = {
+        "defect_type": defect_type, "n_parts": summary.get("count"),
+        "severity_dist": summary.get("severity_dist"),
+        "avg_anomaly": summary.get("avg_anomaly"),
+        "Material": common.get("Material"), "Supplier": common.get("Supplier"),
+        "LubricationHours": common.get("LubricationHours"),
+        "MachineAge": common.get("MachineAge"),
+        "kg_associated": causes_str, "kg_fix": fix, "members": member_view,
+    }
+    reliability_ctx = {
+        "defect_type": defect_type, "n_parts": summary.get("count"),
+        "severity_dist": summary.get("severity_dist"),
+        "avg_anomaly": summary.get("avg_anomaly"),
+        "Machine": common.get("Machine"), "Operator": common.get("Operator"),
+        "Shift": common.get("Shift"),
+        "kg_associated": causes_str, "kg_fix": fix, "members": member_view,
+    }
+    return [
+        ("process", SYSTEMS["process"],
+         "BATCH process context: " + _fmt(process_ctx) + base),
+        ("materials", SYSTEMS["materials"],
+         "BATCH materials context: " + _fmt(materials_ctx) + base),
+        ("reliability", SYSTEMS["reliability"],
+         "BATCH reliability context: " + _fmt(reliability_ctx) + base),
+    ]
+
+
 def moderator_prompt(votes, defect, metadata, kg_info) -> tuple:
     ctx = {
         "defect": defect,

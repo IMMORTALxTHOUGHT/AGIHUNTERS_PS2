@@ -20,7 +20,7 @@ from config import DASHBOARD_PORT, OUTPUTS_DIR, REPORTS_DIR
 from pipeline.inference import infer_one
 from storage import database
 from storage.memory import Memory
-from agents.debate import run_debate
+from agents.debate import run_debate, run_group_debate
 from agents.moderator import moderate
 from analytics.dna_pca import render_dna_figure
 from analytics.health import health
@@ -608,6 +608,144 @@ def _inspect(img, files, folder):
                       'or multiple images in Section 01 for batch.</div>')
         return (overlay_rgb, badge, severity, batch_idle, None, sim, meta, kg)
     return (None, idle_badge, idle_sev, empty, None, empty, empty, empty)
+
+
+# --------------------------------------------------------------------------
+# Batch root-cause analysis: classify all parts, group defectives by type,
+# then run ONE multi-agent debate per group (aggregated context) instead of
+# one per image. Cheap at scale and it finds common root causes.
+# --------------------------------------------------------------------------
+_META_FIELDS = ["Machine", "Shift", "Operator", "Material", "Supplier",
+                "Temperature", "Pressure", "Humidity", "LubricationHours",
+                "MachineAge"]
+
+
+def _summarize_group(defect_type: str, members: list) -> dict:
+    n = max(1, len(members))
+    sev = Counter(m.get("severity") for m in members)
+    sev_dist = {k: int(sev.get(k, 0)) for k in ("high", "mid", "low", "review", "ood")}
+    avg_anom = sum(float(m.get("anomaly", 0.0) or 0.0) for m in members) / n
+    common = {}
+    for f in _META_FIELDS:
+        vals = [str(m["metadata"].get(f)) for m in members
+                if m.get("metadata", {}).get(f) is not None]
+        if vals:
+            common[f] = Counter(vals).most_common(1)[0][0]
+    return {
+        "defect_type": defect_type, "count": len(members),
+        "severity_dist": sev_dist, "avg_anomaly": round(avg_anom, 3),
+        "common_conditions": common,
+    }
+
+
+def batch_analyze(paths) -> dict:
+    """Classify every part, drop good + out-of-distribution, group the
+    remaining defectives by defect type, and run a grouped multi-agent debate
+    per type. Returns a structured analysis dict (also rendered to HTML/PDF)."""
+    results = []
+    for p in (paths or []):
+        try:
+            r = infer_one(p)
+        except Exception:
+            continue
+        results.append((p, r))
+    if not results:
+        return {"total": 0, "defective": 0, "groups": [], "unrecognized": [],
+                "message": "No parts could be analyzed."}
+
+    defectives, unrecognized = [], []
+    for p, r in results:
+        rec = {
+            "file": os.path.basename(p),
+            "defect": r.get("defect", "unknown"),
+            "conf": float(r.get("vit_confidence", 0.0) or 0.0),
+            "severity": _severity(r),
+            "anomaly": float(r.get("anomaly_score", 0.0) or 0.0),
+            "metadata": r.get("metadata", {}) or {},
+            "is_ood": bool(r.get("is_ood", False)),
+        }
+        if r.get("is_ood"):
+            unrecognized.append(rec)
+        elif str(r.get("defect", "")).endswith("_good"):
+            pass  # non-defective part — not a defect to analyse
+        else:
+            defectives.append(rec)
+
+    groups_map = {}
+    for rec in defectives:
+        groups_map.setdefault(rec["defect"], []).append(rec)
+
+    groups = []
+    for defect, members in groups_map.items():
+        summary = _summarize_group(defect, members)
+        kg_info = _memory.get_knowledge(defect)
+        votes = run_group_debate(defect, summary, members, kg_info)
+        verdict = moderate(votes, defect=defect, metadata=summary, kg_info=kg_info)
+        groups.append({
+            "defect": defect, "count": len(members),
+            "summary": summary, "members": members,
+            "votes": votes, "verdict": verdict,
+        })
+    groups.sort(key=lambda g: -g["count"])
+    return {
+        "total": len(results), "defective": len(defectives),
+        "groups": groups, "unrecognized": unrecognized,
+    }
+
+
+def batch_analysis_html(analysis: dict) -> str:
+    if analysis.get("message"):
+        return f'<div class="fm-empty">{_esc(analysis["message"])}</div>'
+    groups = analysis.get("groups", [])
+    if not groups:
+        return ('<div class="fm-empty">No defective parts found in this batch '
+                '(all parts were good or out of distribution).</div>')
+    out = []
+    for g in groups:
+        s = g["summary"]
+        sev = s["severity_dist"]
+        sev_txt = ", ".join(f"{k}:{v}" for k, v in sev.items() if v)
+        cond = s.get("common_conditions", {})
+        cond_txt = ", ".join(f"{k}={v}" for k, v in cond.items()) or "no shared metadata"
+        v = g["verdict"] or {}
+        vote_rows = "".join(
+            f'<tr><td>{_esc(x.get("role",""))}</td>'
+            f'<td>{_esc(x.get("cause",""))}</td>'
+            f'<td class="sim">{_pct(x.get("conf",0))}</td></tr>'
+            for x in g.get("votes", []))
+        actions = v.get("actions") or []
+        actions_html = "".join(f"<li>{_esc(a)}</li>" for a in actions) or "<li>&mdash;</li>"
+        members = ", ".join(_esc(m["file"]) for m in g["members"][:12])
+        if len(g["members"]) > 12:
+            members += f" &hellip; (+{len(g['members']) - 12} more)"
+        out.append(
+            f'<div class="fm-title">defect type: {_esc(g["defect"])} '
+            f'&middot; {g["count"]} part(s)</div>'
+            f'<div class="fm-simnote">severity mix [{sev_txt}] &middot; '
+            f'avg anomaly {s["avg_anomaly"]:.3f} &middot; shared: {_esc(cond_txt)}</div>'
+            f'<table class="fm-tbl"><thead><tr><th>specialist</th>'
+            f'<th>hypothesis (common root cause)</th><th>conf</th></tr></thead>'
+            f'<tbody>{vote_rows}</tbody></table>'
+            f'<div class="fm-title" style="margin-top:10px">winning root cause</div>'
+            f'<div class="fm-badge novel" style="white-space:normal">'
+            f'{_esc(v.get("winning_cause",""))} '
+            f'<span style="font-weight:400"> &middot; conf {_pct(v.get("conf",0))}</span></div>'
+            f'<div class="fm-empty" style="margin-top:6px">{_esc(v.get("rationale",""))}</div>'
+            f'<div class="fm-title" style="margin-top:10px">recommended actions</div>'
+            f'<ul class="fm-tbl" style="color:#e6edf4;padding-left:18px">{actions_html}</ul>'
+            f'<div class="fm-simnote" style="margin-top:8px">members: {members}</div>'
+        )
+    unrec = analysis.get("unrecognized", [])
+    if unrec:
+        files = ", ".join(_esc(m["file"]) for m in unrec[:15])
+        out.append(
+            f'<div class="fm-title" style="margin-top:14px">unrecognized parts '
+            f'(out of distribution)</div>'
+            f'<div class="fm-simnote" style="color:#ff6b6b">{len(unrec)} part(s) '
+            f'could not be matched to a known defect and were excluded from '
+            f'root-cause grouping: {files}</div>'
+        )
+    return "".join(out)
 
 
 def build():

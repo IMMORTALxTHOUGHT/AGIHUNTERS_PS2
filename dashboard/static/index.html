@@ -334,6 +334,13 @@ footer{margin-top:30px;text-align:center;font-family:var(--mono);font-size:10px;
 
   <div class="panels" style="margin-top:18px">
     <div class="panel reveal" style="animation-delay:.4s">
+      <div class="phead"><span class="pidx">07</span><span class="ptitle">Batch Root-Cause</span><span class="psub">grouped · multi-agent</span></div>
+      <div id="batchAnalysis"><div class="fm-empty">Run a batch inspection (folder or multiple images in Section 00), then analyze to get per-defect-type root causes.</div></div>
+    </div>
+  </div>
+
+  <div class="panels" style="margin-top:18px">
+    <div class="panel reveal" style="animation-delay:.4s">
       <div class="phead"><span class="pidx">▦</span><span class="ptitle">Defect-DNA</span><span class="psub">conditions · type</span></div>
       <img id="dna" class="fm-img hidden" alt=""><div id="dnaCap"></div>
     </div>
@@ -512,7 +519,39 @@ function renderBatch(d){
     ? `<div class="fm-title" style="margin-top:12px">Heatmap overlays</div><div class="galwrap">`
       + d.gallery.map(g=>`<img class="gal" src="${g}" alt="">`).join("") + `</div>`
     : "";
-  out.innerHTML = table + gal;
+  out.innerHTML = table + gal
+    + `<div class="actions" style="margin-top:12px">`
+    + `<button class="btn primary" id="batchAnalyze">▸ Analyze batch (root-cause)</button>`
+    + `<button class="btn" id="batchReport">⤓ Download batch report (PDF)</button>`
+    + `</div>`;
+  $("#batchAnalyze").onclick = runBatchAnalysis;
+  $("#batchReport").onclick = downloadBatchReport;
+}
+
+async function runBatchAnalysis(){
+  $("#batchAnalysis").innerHTML='<div class="fm-empty">▮ Grouping defectives by type and running the multi-agent debate per group…</div>';
+  try{
+    const r = await fetch("/api/batch/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+    const d = await r.json();
+    if(d.error){ $("#batchAnalysis").innerHTML='<div class="fm-empty">Batch analysis: '+d.error+'</div>'; return; }
+    $("#batchAnalysis").innerHTML = d.analysis_html;
+    document.getElementById("batchAnalysis").scrollIntoView({behavior:"smooth",block:"center"});
+  }catch(e){
+    $("#batchAnalysis").innerHTML='<div class="fm-empty">Batch analysis failed: '+e.message+'</div>';
+  }
+}
+
+function downloadBatchReport(){
+  const b=$("#batchReport"); b.textContent="Preparing…";
+  fetch("/api/batch/report",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})
+    .then(r=>{ if(!r.ok) throw new Error("server error"); return r.blob(); })
+    .then(blob=>{
+      const u=URL.createObjectURL(blob);
+      const a=document.createElement("a"); a.href=u; a.download="forge_batch_report.pdf";
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
+    })
+    .catch(e=>flash("Batch report: "+e.message))
+    .finally(()=>{ b.textContent="⤓ Download batch report (PDF)"; });
 }
 
 async function loadRCA(path){

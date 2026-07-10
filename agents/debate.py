@@ -58,3 +58,33 @@ def run_debate(defect, metadata, similar_cases, kg_info, use_llm: bool = True) -
             "conf": round(conf, 2),
         })
     return votes
+
+
+def run_group_debate(defect_type, summary, members, kg_info, use_llm: bool = True) -> list:
+    """Multi-agent debate for a BATCH GROUP (many parts, one shared defect type).
+    Reuses the same three specialists but feeds them the aggregated group
+    context so they synthesise a common root cause instead of analysing a
+    single part. Returns the same vote structure as run_debate()."""
+    votes = []
+    for agent, system, user in prompts.build_group_debate_prompts(
+        defect_type, summary, members, kg_info
+    ):
+        if use_llm and available():
+            raw = chat(system, user)
+            data = parse_json(raw, default={})
+            cause = data.get("cause") or f"{defect_type} (undetermined)"
+            reasoning = data.get("reasoning") or (raw or "")[:280]
+            try:
+                conf = float(data.get("conf", 0.5))
+            except Exception:
+                conf = 0.5
+        else:
+            cause, reasoning, conf = _fallback(agent, defect_type, kg_info)
+        votes.append({
+            "agent": agent,
+            "role": ROLES[agent],
+            "cause": cause,
+            "reasoning": reasoning,
+            "conf": round(conf, 2),
+        })
+    return votes
