@@ -641,9 +641,7 @@ def _summarize_group(defect_type: str, members: list) -> dict:
 def batch_analyze(paths) -> dict:
     """Classify every part, drop good + out-of-distribution, group the
     remaining defectives by defect type, and run a grouped multi-agent debate
-    per type (groups run in parallel). Returns a structured analysis dict."""
-    from concurrent.futures import ThreadPoolExecutor
-
+    per type. Returns a structured analysis dict (also rendered to HTML/PDF)."""
     results = []
     for p in (paths or []):
         try:
@@ -677,22 +675,17 @@ def batch_analyze(paths) -> dict:
     for rec in defectives:
         groups_map.setdefault(rec["defect"], []).append(rec)
 
-    def _analyze_group(item):
-        defect, members = item
+    groups = []
+    for defect, members in groups_map.items():
         summary = _summarize_group(defect, members)
         kg_info = _memory.get_knowledge(defect)
         votes = run_group_debate(defect, summary, members, kg_info)
         verdict = moderate(votes, defect=defect, metadata=summary, kg_info=kg_info)
-        return {"defect": defect, "count": len(members),
-                "summary": summary, "members": members,
-                "votes": votes, "verdict": verdict}
-
-    items = list(groups_map.items())
-    if items:
-        with ThreadPoolExecutor(max_workers=min(8, len(items))) as ex:
-            groups = list(ex.map(_analyze_group, items))
-    else:
-        groups = []
+        groups.append({
+            "defect": defect, "count": len(members),
+            "summary": summary, "members": members,
+            "votes": votes, "verdict": verdict,
+        })
     groups.sort(key=lambda g: -g["count"])
     return {
         "total": len(results), "defective": len(defectives),
