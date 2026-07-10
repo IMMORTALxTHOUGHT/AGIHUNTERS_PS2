@@ -123,12 +123,6 @@ def sample_part() -> dict:
     return {"image": _b64_png(img), "name": os.path.basename(pick)}
 
 
-# batch state: the last successfully-inspected batch paths + its analysis,
-# so the (slow, LLM-bound) analysis and PDF can be requested separately.
-_last_batch_paths: list = []
-_last_batch_analysis: dict | None = None
-
-
 def run_batch(folder: str, images: list) -> dict:
     """Batch inspection: a folder path on the box and/or multiple uploaded
     images. Each part is classified + heatmapped and auto-logged so Analytics
@@ -154,13 +148,12 @@ def run_batch(folder: str, images: list) -> dict:
     if not paths:
         return {"count": 0, "rows": [], "gallery": []}
 
-    rows, gallery, ok_paths = [], [], []
+    rows, gallery = [], []
     for p in paths:
         try:
             result = engine.infer_one(p)
         except Exception:
             continue
-        ok_paths.append(p)
         engine._memory.record_inspection(result, p)  # grow memory + KG
         defect = result.get("defect", "unknown")
         sev = {"high": "High", "mid": "Mid", "low": "Low",
@@ -177,29 +170,7 @@ def run_batch(folder: str, images: list) -> dict:
         })
         if len(gallery) < 24 and result.get("heatmap_overlay") is not None:
             gallery.append(_b64_png(result["heatmap_overlay"]))
-
-    global _last_batch_paths
-    _last_batch_paths = ok_paths
     return {"count": len(rows), "rows": rows, "gallery": gallery}
-
-
-def run_batch_analysis() -> dict:
-    """Group defectives by type and run one multi-agent debate per group."""
-    if not _last_batch_paths:
-        return {"error": "Run a batch inspection first."}
-    analysis = engine.batch_analyze(_last_batch_paths)
-    global _last_batch_analysis
-    _last_batch_analysis = analysis
-    return {"analysis_html": engine.batch_analysis_html(analysis)}
-
-
-def run_batch_report() -> bytes:
-    if not _last_batch_paths:
-        raise RuntimeError("Run a batch inspection first.")
-    analysis = _last_batch_analysis or engine.batch_analyze(_last_batch_paths)
-    pdf_path = engine.batch_build_pdf(analysis, str(REPORTS_DIR))
-    with open(pdf_path, "rb") as f:
-        return f.read()
 
 
 def build_report(path: str) -> bytes:
@@ -318,36 +289,6 @@ class Handler(BaseHTTPRequestHandler):
             self._cors()
             self.end_headers()
             self.wfile.write(body)
-
-        elif path == "/api/batch/analyze":
-            try:
-                out = run_batch_analysis()
-                body = json.dumps(out).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-            except Exception as e:
-                traceback.print_exc()
-                body = json.dumps({"error": str(e)}).encode()
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self._cors()
-            self.end_headers()
-            self.wfile.write(body)
-
-        elif path == "/api/batch/report":
-            try:
-                pdf = run_batch_report()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/pdf")
-                self.send_header("Content-Disposition",
-                                 'attachment; filename="forge_batch_report.pdf"')
-                self.send_header("Content-Length", str(len(pdf)))
-                self._cors()
-                self.end_headers()
-                self.wfile.write(pdf)
-            except Exception as e:
-                self.send_error(500, str(e))
 
         elif path == "/api/report":
             try:

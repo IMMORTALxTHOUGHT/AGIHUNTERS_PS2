@@ -63,12 +63,6 @@ python3 -m dashboard.app
 # open http://localhost:7860  (or GRADIO_SHARE=1 for a public link)
 ```
 
-Batch mode (folder or multiple images in Section 00) classifies every part,
-drops good/out-of-distribution parts, **groups the defectives by type**, and
-runs one multi-agent root-cause debate per group (cheap at scale, finds common
-causes like "9/11 from Machine 3 on night shift"). Results render in the
-**Batch Root-Cause** panel and download as a grouped PDF report.
-
 > Models/weights and datasets are large and kept on the box only (see
 > `.gitignore`). On first run the FAISS store is built automatically from the
 > datasets; it is then cached under `models/weights/`.
