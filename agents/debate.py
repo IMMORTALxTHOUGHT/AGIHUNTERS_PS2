@@ -10,6 +10,8 @@ Contract:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from agents.llm import chat, parse_json, available
 from agents import prompts
 
@@ -32,31 +34,38 @@ def _fallback(agent: str, defect: str, kg_info: dict) -> tuple:
     return (defect + " — " + cond, reasons.get(agent, fix), 0.5)
 
 
-def run_debate(defect, metadata, similar_cases, kg_info, use_llm: bool = True) -> list:
-    similar_labels = [c.get("label") for c in (similar_cases or [])[:3]]
-    votes = []
-    for agent, system, user in prompts.build_debate_prompts(
-        defect, metadata, similar_labels, kg_info
-    ):
-        if use_llm and available():
-            raw = chat(system, user)
-            data = parse_json(raw, default={})
-            cause = data.get("cause") or f"{defect} (undetermined)"
-            reasoning = data.get("reasoning") or (raw or "")[:280]
-            try:
-                conf = float(data.get("conf", 0.5))
-            except Exception:
-                conf = 0.5
-        else:
-            cause, reasoning, conf = _fallback(agent, defect, kg_info)
+def _vote_for(agent, system, user, defect_label, kg_info, use_llm):
+    """One specialist's vote. Stateless (single HTTP call), so it is safe to
+    run concurrently across agents/groups."""
+    if use_llm and available():
+        raw = chat(system, user)
+        data = parse_json(raw, default={})
+        cause = data.get("cause") or f"{defect_label} (undetermined)"
+        reasoning = data.get("reasoning") or (raw or "")[:280]
+        try:
+            conf = float(data.get("conf", 0.5))
+        except Exception:
+            conf = 0.5
+    else:
+        cause, reasoning, conf = _fallback(agent, defect_label, kg_info)
+    return {
+        "agent": agent,
+        "role": ROLES[agent],
+        "cause": cause,
+        "reasoning": reasoning,
+        "conf": round(conf, 2),
+    }
 
-        votes.append({
-            "agent": agent,
-            "role": ROLES[agent],
-            "cause": cause,
-            "reasoning": reasoning,
-            "conf": round(conf, 2),
-        })
+
+def run_debate(defect, metadata, similar_cases, kg_info, use_llm: bool = True) -> list:
+    prompts_list = prompts.build_debate_prompts(
+        defect, metadata,
+        [c.get("label") for c in (similar_cases or [])[:3]], kg_info)
+    # the 3 specialists are independent -> run them in parallel
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        votes = list(ex.map(
+            lambda p: _vote_for(p[0], p[1], p[2], defect, kg_info, use_llm),
+            prompts_list))
     return votes
 
 
@@ -64,27 +73,12 @@ def run_group_debate(defect_type, summary, members, kg_info, use_llm: bool = Tru
     """Multi-agent debate for a BATCH GROUP (many parts, one shared defect type).
     Reuses the same three specialists but feeds them the aggregated group
     context so they synthesise a common root cause instead of analysing a
-    single part. Returns the same vote structure as run_debate()."""
-    votes = []
-    for agent, system, user in prompts.build_group_debate_prompts(
-        defect_type, summary, members, kg_info
-    ):
-        if use_llm and available():
-            raw = chat(system, user)
-            data = parse_json(raw, default={})
-            cause = data.get("cause") or f"{defect_type} (undetermined)"
-            reasoning = data.get("reasoning") or (raw or "")[:280]
-            try:
-                conf = float(data.get("conf", 0.5))
-            except Exception:
-                conf = 0.5
-        else:
-            cause, reasoning, conf = _fallback(agent, defect_type, kg_info)
-        votes.append({
-            "agent": agent,
-            "role": ROLES[agent],
-            "cause": cause,
-            "reasoning": reasoning,
-            "conf": round(conf, 2),
-        })
+    single part. The 3 agents run in parallel. Returns vote structure like
+    run_debate()."""
+    prompts_list = prompts.build_group_debate_prompts(
+        defect_type, summary, members, kg_info)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        votes = list(ex.map(
+            lambda p: _vote_for(p[0], p[1], p[2], defect_type, kg_info, use_llm),
+            prompts_list))
     return votes
